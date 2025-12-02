@@ -5,15 +5,252 @@
 //!
 //! For verification sB = R + hA, we find rho, tau such that rho = tau*h (mod ell)
 use crate::scalar::Scalar;
-use ethnum::{I256, U256};
+
+/// A signed 256-bit integer represented as 4 u64 limbs (little-endian)
+/// Used for the half-extended Euclidean algorithm
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct I256 {
+    /// Limbs in little-endian order: [low, ..., high]
+    limbs: [u64; 4],
+    /// Sign: true = negative, false = non-negative
+    negative: bool,
+}
+
+impl I256 {
+    const ZERO: Self = I256 {
+        limbs: [0, 0, 0, 0],
+        negative: false,
+    };
+
+    /// Create from words (high, low as u128 each)
+    const fn from_words(high: u128, low: u128) -> Self {
+        I256 {
+            limbs: [
+                low as u64,
+                (low >> 64) as u64,
+                high as u64,
+                (high >> 64) as u64,
+            ],
+            negative: false,
+        }
+    }
+
+    /// Create from little-endian bytes
+    fn from_le_bytes(bytes: [u8; 32]) -> Self {
+        let mut limbs = [0u64; 4];
+        for i in 0..4 {
+            limbs[i] = u64::from_le_bytes([
+                bytes[i * 8],
+                bytes[i * 8 + 1],
+                bytes[i * 8 + 2],
+                bytes[i * 8 + 3],
+                bytes[i * 8 + 4],
+                bytes[i * 8 + 5],
+                bytes[i * 8 + 6],
+                bytes[i * 8 + 7],
+            ]);
+        }
+        I256 {
+            limbs,
+            negative: false,
+        }
+    }
+
+    /// Convert to little-endian bytes
+    fn to_le_bytes(self) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        for i in 0..4 {
+            bytes[i * 8..(i + 1) * 8].copy_from_slice(&self.limbs[i].to_le_bytes());
+        }
+        bytes
+    }
+
+    /// Check if negative (< 0)
+    fn is_negative(&self) -> bool {
+        self.negative && !self.is_zero()
+    }
+
+    /// Check if zero
+    fn is_zero(&self) -> bool {
+        self.limbs[0] == 0 && self.limbs[1] == 0 && self.limbs[2] == 0 && self.limbs[3] == 0
+    }
+
+    /// Count leading zeros of the magnitude
+    fn leading_zeros(&self) -> u32 {
+        if self.is_zero() {
+            return 256;
+        }
+
+        for i in (0..4).rev() {
+            if self.limbs[i] != 0 {
+                return self.limbs[i].leading_zeros() + (3 - i) as u32 * 64;
+            }
+        }
+        256
+    }
+
+    /// Wrapping negation (two's complement)
+    fn wrapping_neg(self) -> Self {
+        if self.is_zero() {
+            return Self::ZERO;
+        }
+        I256 {
+            limbs: self.limbs,
+            negative: !self.negative,
+        }
+    }
+
+    /// Wrapping addition
+    fn wrapping_add(self, rhs: Self) -> Self {
+        // If signs are the same, add magnitudes
+        if self.negative == rhs.negative {
+            let (limbs, _overflow) = add_limbs(&self.limbs, &rhs.limbs);
+            I256 {
+                limbs,
+                negative: self.negative,
+            }
+        } else {
+            // Different signs: subtract the smaller magnitude from larger
+            let cmp = cmp_magnitude(&self.limbs, &rhs.limbs);
+            match cmp {
+                core::cmp::Ordering::Greater => {
+                    let limbs = sub_limbs(&self.limbs, &rhs.limbs);
+                    I256 {
+                        limbs,
+                        negative: self.negative,
+                    }
+                }
+                core::cmp::Ordering::Less => {
+                    let limbs = sub_limbs(&rhs.limbs, &self.limbs);
+                    I256 {
+                        limbs,
+                        negative: rhs.negative,
+                    }
+                }
+                core::cmp::Ordering::Equal => Self::ZERO,
+            }
+        }
+    }
+
+    /// Wrapping subtraction
+    fn wrapping_sub(self, rhs: Self) -> Self {
+        self.wrapping_add(rhs.wrapping_neg())
+    }
+
+    /// Left shift
+    fn wrapping_shl(self, shift: u32) -> Self {
+        if shift >= 256 {
+            return Self::ZERO;
+        }
+        if shift == 0 {
+            return self;
+        }
+
+        let limb_shift = (shift / 64) as usize;
+        let bit_shift = shift % 64;
+
+        let mut result = [0u64; 4];
+
+        if bit_shift == 0 {
+            // Simple limb shift
+            for i in limb_shift..4 {
+                result[i] = self.limbs[i - limb_shift];
+            }
+        } else {
+            // Shift with carry between limbs
+            for i in limb_shift..4 {
+                let src_idx = i - limb_shift;
+                result[i] = self.limbs[src_idx] << bit_shift;
+                if src_idx > 0 {
+                    result[i] |= self.limbs[src_idx - 1] >> (64 - bit_shift);
+                }
+            }
+        }
+
+        I256 {
+            limbs: result,
+            negative: self.negative,
+        }
+    }
+}
+
+// Helper: Add two magnitude arrays, returns (result, overflow_occurred)
+fn add_limbs(a: &[u64; 4], b: &[u64; 4]) -> ([u64; 4], bool) {
+    let mut result = [0u64; 4];
+    let mut carry = 0u128;
+
+    for i in 0..4 {
+        let sum = a[i] as u128 + b[i] as u128 + carry;
+        result[i] = sum as u64;
+        carry = sum >> 64;
+    }
+
+    (result, carry != 0)
+}
+
+// Helper: Subtract b from a (assumes a >= b), returns result
+fn sub_limbs(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
+    let mut result = [0u64; 4];
+    let mut borrow = 0i128;
+
+    for i in 0..4 {
+        let diff = a[i] as i128 - b[i] as i128 - borrow;
+        if diff < 0 {
+            result[i] = (diff + (1i128 << 64)) as u64;
+            borrow = 1;
+        } else {
+            result[i] = diff as u64;
+            borrow = 0;
+        }
+    }
+
+    result
+}
+
+// Helper: Compare magnitudes of two limb arrays
+fn cmp_magnitude(a: &[u64; 4], b: &[u64; 4]) -> core::cmp::Ordering {
+    for i in (0..4).rev() {
+        match a[i].cmp(&b[i]) {
+            core::cmp::Ordering::Equal => continue,
+            other => return other,
+        }
+    }
+    core::cmp::Ordering::Equal
+}
+
+impl PartialOrd for I256 {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for I256 {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        use core::cmp::Ordering;
+
+        match (self.negative, other.negative) {
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => cmp_magnitude(&self.limbs, &other.limbs),
+            (true, true) => cmp_magnitude(&other.limbs, &self.limbs),
+        }
+    }
+}
+
+impl core::ops::Shl<u32> for I256 {
+    type Output = Self;
+    fn shl(self, rhs: u32) -> Self {
+        self.wrapping_shl(rhs)
+    }
+}
 
 /// Ed25519 group order L = 2^252 + 27742317777372353535851937790883648493
 /// = 0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed
 /// High 128 bits: 0x10000000000000000000000000000000
 /// Low 128 bits:  0x14def9dea2f79cd65812631a5cf5d3ed
 const L: I256 = I256::from_words(
-    0x10000000000000000000000000000000,
-    0x14def9dea2f79cd65812631a5cf5d3ed,
+    0x1000000000000000_0000000000000000,
+    0x14def9dea2f79cd6_5812631a5cf5d3ed,
 );
 
 /// Implement curve25519_hEEA_vartime algorithm
@@ -42,8 +279,8 @@ pub(crate) fn curve25519_heea_vartime(v: I256) -> (I256, i128) {
         let mut t = t0;
 
         // Check if signs are the same
-        let sign_r0 = r0 < I256::ZERO;
-        let sign_r1 = r1 < I256::ZERO;
+        let sign_r0 = r0.is_negative();
+        let sign_r1 = r1.is_negative();
 
         if sign_r0 == sign_r1 {
             // Same sign: subtract
@@ -83,23 +320,17 @@ pub(crate) fn curve25519_heea_vartime(v: I256) -> (I256, i128) {
 /// Compute bit length of I256 (magnitude, not including sign)
 #[inline]
 fn bit_length_i256(val: I256) -> u32 {
-    if val == I256::ZERO {
+    if val.is_zero() {
         return 1;
     }
 
-    if val < I256::ZERO {
-        // For negative, compute bit length of absolute value
-        let abs_val = val.wrapping_neg();
-        256 - abs_val.leading_zeros()
-    } else {
-        256 - val.leading_zeros()
-    }
+    256 - val.leading_zeros()
 }
 
 /// Convert I256 to Scalar
 #[inline]
 fn i256_to_scalar(val: I256) -> Scalar {
-    if val < I256::ZERO {
+    if val.is_negative() {
         // For negative numbers, compute absolute value and negate
         let abs_val = val.wrapping_neg();
         let bytes = abs_val.to_le_bytes();
@@ -135,9 +366,7 @@ fn i128_to_scalar(val: i128) -> Scalar {
 #[inline]
 fn scalar_to_i256(s: &Scalar) -> I256 {
     // Scalar is always positive and less than L, so treat as unsigned
-    let u256 = U256::from_le_bytes(*s.as_bytes());
-    // Convert to I256 - this is safe since Scalar < L < 2^253 < 2^255
-    u256.as_i256()
+    I256::from_le_bytes(*s.as_bytes())
 }
 
 /// Generate half-size scalars (rho, tau) for a given hash value h
@@ -158,7 +387,7 @@ pub fn generate_half_size_scalars(h: &Scalar) -> (Scalar, Scalar, bool) {
     let tau = i128_to_scalar(tau_i128);
 
     // Check if rho is negative
-    let rho_is_negative = rho_i256 < I256::ZERO;
+    let rho_is_negative = rho_i256.is_negative();
     let tau_is_negative = tau_i128 < 0;
 
     let (rho, tau, flip_h) = match (rho_is_negative, tau_is_negative) {
