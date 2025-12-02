@@ -37,32 +37,15 @@ impl I256 {
 
     /// Create from little-endian bytes
     fn from_le_bytes(bytes: [u8; 32]) -> Self {
-        let mut limbs = [0u64; 4];
-        for i in 0..4 {
-            limbs[i] = u64::from_le_bytes([
-                bytes[i * 8],
-                bytes[i * 8 + 1],
-                bytes[i * 8 + 2],
-                bytes[i * 8 + 3],
-                bytes[i * 8 + 4],
-                bytes[i * 8 + 5],
-                bytes[i * 8 + 6],
-                bytes[i * 8 + 7],
-            ]);
-        }
         I256 {
-            limbs,
+            limbs: unsafe { core::mem::transmute::<[u8; 32], [u64; 4]>(bytes) },
             negative: false,
         }
     }
 
     /// Convert to little-endian bytes
     fn to_le_bytes(self) -> [u8; 32] {
-        let mut bytes = [0u8; 32];
-        for i in 0..4 {
-            bytes[i * 8..(i + 1) * 8].copy_from_slice(&self.limbs[i].to_le_bytes());
-        }
-        bytes
+        unsafe { core::mem::transmute::<[u64; 4], [u8; 32]>(self.limbs) }
     }
 
     /// Check if negative (< 0)
@@ -114,14 +97,14 @@ impl I256 {
             let cmp = cmp_magnitude(&self.limbs, &rhs.limbs);
             match cmp {
                 core::cmp::Ordering::Greater => {
-                    let limbs = sub_limbs(&self.limbs, &rhs.limbs);
+                    let (limbs, _underflow) = sub_limbs(&self.limbs, &rhs.limbs);
                     I256 {
                         limbs,
                         negative: self.negative,
                     }
                 }
                 core::cmp::Ordering::Less => {
-                    let limbs = sub_limbs(&rhs.limbs, &self.limbs);
+                    let (limbs, _underflow) = sub_limbs(&rhs.limbs, &self.limbs);
                     I256 {
                         limbs,
                         negative: rhs.negative,
@@ -177,34 +160,28 @@ impl I256 {
 // Helper: Add two magnitude arrays, returns (result, overflow_occurred)
 fn add_limbs(a: &[u64; 4], b: &[u64; 4]) -> ([u64; 4], bool) {
     let mut result = [0u64; 4];
-    let mut carry = 0u128;
+    let mut carry;
 
-    for i in 0..4 {
-        let sum = a[i] as u128 + b[i] as u128 + carry;
-        result[i] = sum as u64;
-        carry = sum >> 64;
-    }
+    (result[0], carry) = a[0].overflowing_add(b[0]);
+    (result[1], carry) = a[1].carrying_add(b[1], carry);
+    (result[2], carry) = a[2].carrying_add(b[2], carry);
+    (result[3], carry) = a[3].carrying_add(b[3], carry);
 
-    (result, carry != 0)
+    (result, carry)
 }
 
-// Helper: Subtract b from a (assumes a >= b), returns result
-fn sub_limbs(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
+// Helper: Subtract b from a, returns (result, underflow)
+// If underflow is true, then a < b and the result is the two's complement
+fn sub_limbs(a: &[u64; 4], b: &[u64; 4]) -> ([u64; 4], bool) {
     let mut result = [0u64; 4];
-    let mut borrow = 0i128;
+    let mut borrow;
 
-    for i in 0..4 {
-        let diff = a[i] as i128 - b[i] as i128 - borrow;
-        if diff < 0 {
-            result[i] = (diff + (1i128 << 64)) as u64;
-            borrow = 1;
-        } else {
-            result[i] = diff as u64;
-            borrow = 0;
-        }
-    }
+    (result[0], borrow) = a[0].overflowing_sub(b[0]);
+    (result[1], borrow) = a[1].borrowing_sub(b[1], borrow);
+    (result[2], borrow) = a[2].borrowing_sub(b[2], borrow);
+    (result[3], borrow) = a[3].borrowing_sub(b[3], borrow);
 
-    result
+    (result, borrow)
 }
 
 // Helper: Compare magnitudes of two limb arrays
