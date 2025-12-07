@@ -107,40 +107,74 @@ impl I256 {
 
     #[cfg(test)]
     pub(crate) fn new(a: i128) -> Self {
-        let mag = a.unsigned_abs() as u128;
+        let mag: u128 = a.unsigned_abs();
         I256 {
-            limbs: [
-                mag as u64,
-                (mag >> 64) as u64,
-                0,
-                0,
-            ],
+            limbs: [mag as u64, (mag >> 64) as u64, 0, 0],
             negative: a.is_negative(),
         }
     }
 
     /// Create from little-endian bytes
     pub(crate) fn from_le_bytes(bytes: [u8; 32]) -> Self {
-        let mut limbs = [0u64; 4];
-        for i in 0..4 {
-            let start = i * 8;
-            let mut chunk = [0u8; 8];
-            chunk.copy_from_slice(&bytes[start..start + 8]);
-            limbs[i] = u64::from_le_bytes(chunk);
-        }
         I256 {
-            limbs,
+            limbs: [
+                u64::from_le_bytes([
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                ]),
+                u64::from_le_bytes([
+                    bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                    bytes[15],
+                ]),
+                u64::from_le_bytes([
+                    bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22],
+                    bytes[23],
+                ]),
+                u64::from_le_bytes([
+                    bytes[24], bytes[25], bytes[26], bytes[27], bytes[28], bytes[29], bytes[30],
+                    bytes[31],
+                ]),
+            ],
             negative: false,
         }
     }
 
     /// Convert to little-endian bytes
     pub(crate) fn to_le_bytes(self) -> [u8; 32] {
-        let mut out = [0u8; 32];
-        for i in 0..4 {
-            out[i * 8..i * 8 + 8].copy_from_slice(&self.limbs[i].to_le_bytes());
-        }
-        out
+        let l = self.limbs;
+        [
+            l[0] as u8,
+            (l[0] >> 8) as u8,
+            (l[0] >> 16) as u8,
+            (l[0] >> 24) as u8,
+            (l[0] >> 32) as u8,
+            (l[0] >> 40) as u8,
+            (l[0] >> 48) as u8,
+            (l[0] >> 56) as u8,
+            l[1] as u8,
+            (l[1] >> 8) as u8,
+            (l[1] >> 16) as u8,
+            (l[1] >> 24) as u8,
+            (l[1] >> 32) as u8,
+            (l[1] >> 40) as u8,
+            (l[1] >> 48) as u8,
+            (l[1] >> 56) as u8,
+            l[2] as u8,
+            (l[2] >> 8) as u8,
+            (l[2] >> 16) as u8,
+            (l[2] >> 24) as u8,
+            (l[2] >> 32) as u8,
+            (l[2] >> 40) as u8,
+            (l[2] >> 48) as u8,
+            (l[2] >> 56) as u8,
+            l[3] as u8,
+            (l[3] >> 8) as u8,
+            (l[3] >> 16) as u8,
+            (l[3] >> 24) as u8,
+            (l[3] >> 32) as u8,
+            (l[3] >> 40) as u8,
+            (l[3] >> 48) as u8,
+            (l[3] >> 56) as u8,
+        ]
     }
 
     /// Check if zero
@@ -281,14 +315,26 @@ impl Neg for I256 {
 #[inline(always)]
 fn add_limbs(a: &[u64; 4], b: &[u64; 4]) -> ([u64; 4], bool) {
     let mut result = [0u64; 4];
-    let mut carry;
+    let (r0, c0) = a[0].overflowing_add(b[0]);
 
-    (result[0], carry) = a[0].overflowing_add(b[0]);
-    (result[1], carry) = a[1].carrying_add(b[1], carry);
-    (result[2], carry) = a[2].carrying_add(b[2], carry);
-    (result[3], carry) = a[3].carrying_add(b[3], carry);
+    let (r1_base, c1a) = a[1].overflowing_add(b[1]);
+    let (r1, c1b) = r1_base.overflowing_add(c0 as u64);
+    let c1 = c1a || c1b;
 
-    (result, carry)
+    let (r2_base, c2a) = a[2].overflowing_add(b[2]);
+    let (r2, c2b) = r2_base.overflowing_add(c1 as u64);
+    let c2 = c2a || c2b;
+
+    let (r3_base, c3a) = a[3].overflowing_add(b[3]);
+    let (r3, c3b) = r3_base.overflowing_add(c2 as u64);
+    let c3 = c3a || c3b;
+
+    result[0] = r0;
+    result[1] = r1;
+    result[2] = r2;
+    result[3] = r3;
+
+    (result, c3)
 }
 
 // Helper: Subtract b from a, returns (result, underflow)
@@ -296,14 +342,26 @@ fn add_limbs(a: &[u64; 4], b: &[u64; 4]) -> ([u64; 4], bool) {
 #[inline(always)]
 fn sub_limbs(a: &[u64; 4], b: &[u64; 4]) -> ([u64; 4], bool) {
     let mut result = [0u64; 4];
-    let mut borrow;
+    let (r0, b0) = a[0].overflowing_sub(b[0]);
 
-    (result[0], borrow) = a[0].overflowing_sub(b[0]);
-    (result[1], borrow) = a[1].borrowing_sub(b[1], borrow);
-    (result[2], borrow) = a[2].borrowing_sub(b[2], borrow);
-    (result[3], borrow) = a[3].borrowing_sub(b[3], borrow);
+    let (r1_base, b1a) = a[1].overflowing_sub(b[1]);
+    let (r1, b1b) = r1_base.overflowing_sub(b0 as u64);
+    let b1 = b1a || b1b;
 
-    (result, borrow)
+    let (r2_base, b2a) = a[2].overflowing_sub(b[2]);
+    let (r2, b2b) = r2_base.overflowing_sub(b1 as u64);
+    let b2 = b2a || b2b;
+
+    let (r3_base, b3a) = a[3].overflowing_sub(b[3]);
+    let (r3, b3b) = r3_base.overflowing_sub(b2 as u64);
+    let b3 = b3a || b3b;
+
+    result[0] = r0;
+    result[1] = r1;
+    result[2] = r2;
+    result[3] = r3;
+
+    (result, b3)
 }
 
 // Helper: Compare magnitudes of two limb arrays
