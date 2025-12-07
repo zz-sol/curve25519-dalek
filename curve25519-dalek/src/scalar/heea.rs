@@ -5,9 +5,19 @@
 //! half-size scalars for faster EdDSA verification.
 //!
 //! For verification sB = R + hA, we find rho, tau such that rho = tau*h (mod ell)
-use ethnum::I256;
+use core::ops::Neg;
 
 use crate::constants;
+
+/// A signed 256-bit integer represented as 4 u64 limbs (little-endian)
+/// Used for the half-extended Euclidean algorithm
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct I256 {
+    /// Limbs in little-endian order: [low, ..., high]
+    limbs: [u64; 4],
+    /// Sign: true = negative, false = non-negative
+    negative: bool,
+}
 
 pub(crate) const HEEA_MAX_INDEX: usize = 129;
 
@@ -65,9 +75,229 @@ pub(crate) fn curve25519_heea_vartime(v: I256) -> (I256, I256) {
 
 /// Compute bit length of I256 (magnitude, not including sign)
 #[inline]
-fn bit_length_i256(val: I256) -> u32 {
-    let abs = val.unsigned_abs();
-    256 - abs.leading_zeros()
+fn bit_length_i256(v: I256) -> u32 {
+    if v.is_zero() {
+        return 0;
+    }
+
+    for i in (0..4).rev() {
+        let limb = v.limbs[i];
+        if limb != 0 {
+            return (i as u32) * 64 + (64 - limb.leading_zeros());
+        }
+    }
+
+    0
+}
+
+impl I256 {
+    pub(crate) const ZERO: Self = I256 {
+        limbs: [0, 0, 0, 0],
+        negative: false,
+    };
+
+    const ONE: Self = I256 {
+        limbs: [1, 0, 0, 0],
+        negative: false,
+    };
+
+    const fn abs(&self) -> Self {
+        I256 {
+            limbs: self.limbs,
+            negative: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new(a: i128) -> Self {
+        I256 {
+            limbs: unsafe {
+                core::mem::transmute::<[u8; 32], [u64; 4]>(
+                    [a.abs().to_le_bytes().as_ref(), [0; 16].as_ref()]
+                        .concat()
+                        .try_into()
+                        .unwrap(),
+                )
+            },
+            negative: a.is_negative(),
+        }
+    }
+
+    /// Create from little-endian bytes
+    pub(crate) fn from_le_bytes(bytes: [u8; 32]) -> Self {
+        I256 {
+            limbs: unsafe { core::mem::transmute::<[u8; 32], [u64; 4]>(bytes) },
+            negative: false,
+        }
+    }
+
+    /// Convert to little-endian bytes
+    pub(crate) fn to_le_bytes(self) -> [u8; 32] {
+        unsafe { core::mem::transmute::<[u64; 4], [u8; 32]>(self.limbs) }
+    }
+
+    /// Check if zero
+    fn is_zero(&self) -> bool {
+        self.limbs[0] == 0 && self.limbs[1] == 0 && self.limbs[2] == 0 && self.limbs[3] == 0
+    }
+
+    /// Wrapping negation (two's complement)
+    fn wrapping_neg(self) -> Self {
+        if self.is_zero() {
+            return Self::ZERO;
+        }
+        I256 {
+            limbs: self.limbs,
+            negative: !self.negative,
+        }
+    }
+
+    /// Wrapping addition
+    fn wrapping_add(self, rhs: Self) -> Self {
+        // If signs are the same, add magnitudes
+        if self.negative == rhs.negative {
+            let (limbs, _overflow) = add_limbs(&self.limbs, &rhs.limbs);
+            I256 {
+                limbs,
+                negative: self.negative,
+            }
+        } else {
+            // Different signs: subtract the smaller magnitude from larger
+            let cmp = cmp_magnitude(&self.limbs, &rhs.limbs);
+            match cmp {
+                core::cmp::Ordering::Greater => {
+                    let (limbs, _underflow) = sub_limbs(&self.limbs, &rhs.limbs);
+                    I256 {
+                        limbs,
+                        negative: self.negative,
+                    }
+                }
+                core::cmp::Ordering::Less => {
+                    let (limbs, _underflow) = sub_limbs(&rhs.limbs, &self.limbs);
+                    I256 {
+                        limbs,
+                        negative: rhs.negative,
+                    }
+                }
+                core::cmp::Ordering::Equal => Self::ZERO,
+            }
+        }
+    }
+
+    /// Wrapping subtraction
+    fn wrapping_sub(self, rhs: Self) -> Self {
+        self.wrapping_add(rhs.wrapping_neg())
+    }
+
+    /// Left shift
+    fn wrapping_shl(self, shift: u32) -> Self {
+        if shift >= 256 {
+            return Self::ZERO;
+        }
+        if shift == 0 {
+            return self;
+        }
+
+        let limb_shift = (shift / 64) as usize;
+        let bit_shift = shift % 64;
+
+        let mut result = [0u64; 4];
+
+        if bit_shift == 0 {
+            // Simple limb shift
+            for i in limb_shift..4 {
+                result[i] = self.limbs[i - limb_shift];
+            }
+        } else {
+            // Shift with carry between limbs
+            for i in limb_shift..4 {
+                let src_idx = i - limb_shift;
+                result[i] = self.limbs[src_idx] << bit_shift;
+                if src_idx > 0 {
+                    result[i] |= self.limbs[src_idx - 1] >> (64 - bit_shift);
+                }
+            }
+        }
+
+        I256 {
+            limbs: result,
+            negative: self.negative,
+        }
+    }
+}
+
+impl Neg for I256 {
+    type Output = Self;
+    fn neg(self) -> <Self as Neg>::Output {
+        Self {
+            limbs: self.limbs,
+            negative: !self.negative,
+        }
+    }
+}
+
+// Helper: Add two magnitude arrays, returns (result, overflow_occurred)
+fn add_limbs(a: &[u64; 4], b: &[u64; 4]) -> ([u64; 4], bool) {
+    let mut result = [0u64; 4];
+    let mut carry;
+
+    (result[0], carry) = a[0].overflowing_add(b[0]);
+    (result[1], carry) = a[1].carrying_add(b[1], carry);
+    (result[2], carry) = a[2].carrying_add(b[2], carry);
+    (result[3], carry) = a[3].carrying_add(b[3], carry);
+
+    (result, carry)
+}
+
+// Helper: Subtract b from a, returns (result, underflow)
+// If underflow is true, then a < b and the result is the two's complement
+fn sub_limbs(a: &[u64; 4], b: &[u64; 4]) -> ([u64; 4], bool) {
+    let mut result = [0u64; 4];
+    let mut borrow;
+
+    (result[0], borrow) = a[0].overflowing_sub(b[0]);
+    (result[1], borrow) = a[1].borrowing_sub(b[1], borrow);
+    (result[2], borrow) = a[2].borrowing_sub(b[2], borrow);
+    (result[3], borrow) = a[3].borrowing_sub(b[3], borrow);
+
+    (result, borrow)
+}
+
+// Helper: Compare magnitudes of two limb arrays
+fn cmp_magnitude(a: &[u64; 4], b: &[u64; 4]) -> core::cmp::Ordering {
+    for i in (0..4).rev() {
+        match a[i].cmp(&b[i]) {
+            core::cmp::Ordering::Equal => continue,
+            other => return other,
+        }
+    }
+    core::cmp::Ordering::Equal
+}
+
+impl PartialOrd for I256 {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for I256 {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        use core::cmp::Ordering;
+
+        match (self.negative, other.negative) {
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => cmp_magnitude(&self.limbs, &other.limbs),
+            (true, true) => cmp_magnitude(&other.limbs, &self.limbs),
+        }
+    }
+}
+
+impl core::ops::Shl<u32> for I256 {
+    type Output = Self;
+    fn shl(self, rhs: u32) -> Self {
+        self.wrapping_shl(rhs)
+    }
 }
 
 #[cfg(test)]

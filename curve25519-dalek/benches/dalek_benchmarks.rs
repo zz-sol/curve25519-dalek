@@ -476,10 +476,10 @@ mod heea_benches {
 }
 
 criterion_main!(
-    scalar_benches::scalar_benches,
-    montgomery_benches::montgomery_benches,
-    ristretto_benches::ristretto_benches,
-    edwards_benches::edwards_benches,
-    multiscalar_benches::multiscalar_benches,
+    // scalar_benches::scalar_benches,
+    // montgomery_benches::montgomery_benches,
+    // ristretto_benches::ristretto_benches,
+    // edwards_benches::edwards_benches,
+    // multiscalar_benches::multiscalar_benches,
     heea_benches::heea_benches,
 );
