@@ -28,6 +28,7 @@ rustdoc-args = [
 features = ["batch", "digest", "hazmat", "pem", "serde"]
 
 [dependencies]
+ark-std = "0.5.0"
 curve25519-dalek = { version = "=5.0.0-pre.2", default-features = false, features = [
     "digest",
 ] }

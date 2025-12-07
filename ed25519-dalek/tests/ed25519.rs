@@ -238,6 +238,8 @@ mod vectors {
         let sig = Signature::try_from(&signature[..]).unwrap();
         assert!(vk.verify(message1, &sig).is_ok());
         assert!(vk.verify(message2, &sig).is_ok());
+        assert!(vk.verify_heea(message1, &sig).is_ok());
+        assert!(vk.verify_heea(message2, &sig).is_ok());
 
         // Check that this public key appears as weak
         assert!(vk.is_weak());
@@ -246,8 +248,8 @@ mod vectors {
         // small order pubkeys.
         assert!(vk.verify_strict(message1, &sig).is_err());
         assert!(vk.verify_strict(message2, &sig).is_err());
-        assert!(vk.verify_heea(message1, &sig).is_err());
-        assert!(vk.verify_heea(message2, &sig).is_err());
+        assert!(vk.verify_strict_heea(message1, &sig).is_err());
+        assert!(vk.verify_strict_heea(message2, &sig).is_err());
     }
 
     // Identical to repudiation() above, but testing verify_prehashed against
@@ -333,7 +335,7 @@ mod integrations {
             "Strict verification of a valid signature failed!"
         );
         assert!(
-            verifying_key.verify_heea(good, &good_sig).is_ok(),
+            verifying_key.verify_strict_heea(good, &good_sig).is_ok(),
             "HEEA verification of a valid signature failed!"
         );
         assert!(
@@ -345,7 +347,7 @@ mod integrations {
             "Strict verification of a signature on a different message passed!"
         );
         assert!(
-            verifying_key.verify_heea(good, &bad_sig).is_err(),
+            verifying_key.verify_strict_heea(good, &bad_sig).is_err(),
             "HEEA verification of a signature on a different message passed!"
         );
         assert!(
@@ -357,7 +359,7 @@ mod integrations {
             "Strict verification of a signature on a different message passed!"
         );
         assert!(
-            verifying_key.verify_heea(bad, &good_sig).is_err(),
+            verifying_key.verify_strict_heea(bad, &good_sig).is_err(),
             "HEEA verification of a signature on a different message passed!"
         );
     }
@@ -777,6 +779,14 @@ mod serialisation {
             "verify_heea failed for valid signature"
         );
         assert!(
+            verifying_key.verify(msg_bytes, &sig).is_ok(),
+            "verify failed for valid signature"
+        );
+        assert!(
+            verifying_key.verify_strict_heea(msg_bytes, &sig).is_ok(),
+            "verify_strict_heea failed for valid signature"
+        );
+        assert!(
             verifying_key.verify_strict(msg_bytes, &sig).is_ok(),
             "verify_strict failed for valid signature"
         );
@@ -815,6 +825,16 @@ mod serialisation {
                 "verify_heea failed for test vector with public key: {}",
                 public
             );
+            assert!(
+                verifying_key.verify(&msg_bytes, &sig).is_ok(),
+                "verify failed for test vector with public key: {}",
+                public
+            );
+            assert!(
+                verifying_key.verify_strict_heea(&msg_bytes, &sig).is_ok(),
+                "verify_strict_heea failed for test vector with public key: {}",
+                public
+            );
 
             // Also verify with standard verification
             assert!(
@@ -841,6 +861,10 @@ mod serialisation {
         // This signature is valid for an empty message, but we're verifying with a different message
         assert!(
             verifying_key.verify_heea(msg_bytes, &sig).is_err(),
+            "verify_heea should reject invalid signature"
+        );
+        assert!(
+            verifying_key.verify_strict_heea(msg_bytes, &sig).is_err(),
             "verify_heea should reject invalid signature"
         );
     }

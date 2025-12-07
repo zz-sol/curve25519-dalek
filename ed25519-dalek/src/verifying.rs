@@ -20,6 +20,11 @@ use curve25519_dalek::{
     traits::IsIdentity,
 };
 
+#[cfg(feature = "alloc")]
+use curve25519_dalek::{
+    constants, edwards::VartimeEdwardsPrecomputation, traits::VartimePrecomputedMultiscalarMul,
+};
+
 use ed25519::signature::{MultipartVerifier, Verifier};
 
 use sha2::Sha512;
@@ -219,6 +224,58 @@ impl VerifyingKey {
         }
     }
 
+    #[allow(non_snake_case)]
+    pub(crate) fn raw_verify_heea<CtxDigest>(
+        &self,
+        message: &[&[u8]],
+        signature: &ed25519::Signature,
+    ) -> Result<(), SignatureError>
+    where
+        CtxDigest: Digest<OutputSize = U64>,
+    {
+        use curve25519_dalek::traits::HEEADecomposition;
+        
+        let signature = InternalSignature::try_from(signature)?;
+        ark_std::println!("here");
+        let signature_R = signature
+            .R
+            .decompress()
+            .ok_or_else(|| {
+                
+                ark_std::println!("decompression failed");
+                SignatureError::from(InternalError::Verify)})?;
+
+        // Compute h = H(R || A || M)
+        let mut h = CtxDigest::new();
+        Digest::update(&mut h, signature.R.as_bytes());
+        Digest::update(&mut h, self.compressed.as_bytes());
+        for m in message {
+            Digest::update(&mut h, m);
+        }
+        let h = Scalar::from_hash(h);
+
+        let (rho, tau, flip_h) = h.heea_decompose();
+
+        let s = signature.s;
+        let ts = tau * s;
+        let A = if flip_h { -self.point } else { self.point };
+        let neg_ts = -ts;
+
+        let result = EdwardsPoint::vartime_triple_scalar_mul_basepoint(
+            &tau,
+            &signature_R,
+            &rho,
+            &A,
+            &neg_ts,
+        );
+ark_std::        println!("is not identity: {}", result.is_identity());
+        if result.is_identity() {
+            Ok(())
+        } else {
+            Err(InternalError::Verify.into())
+        }
+    }
+
     /// The prehashed non-batched Ed25519 verification check, rejecting non-canonical R values.
     /// (see [`Self::recompute_R`]). `CtxDigest` is the digest used to calculate the
     /// pseudorandomness needed for signing. `MsgDigest` is the digest used to hash the signed
@@ -399,7 +456,7 @@ impl VerifyingKey {
     /// τs_lo B + τs_hi (2^128 B) = τR + ρA
     /// which can be done via 4-variable MSM with half-size scalars.
     #[allow(non_snake_case)]
-    pub fn verify_heea(
+    pub fn verify_strict_heea(
         &self,
         message: &[u8],
         signature: &ed25519::Signature,
@@ -641,6 +698,17 @@ impl Verifier<ed25519::Signature> for VerifyingKey {
     /// Returns `Ok(())` if the signature is valid, and `Err` otherwise.
     fn verify(&self, message: &[u8], signature: &ed25519::Signature) -> Result<(), SignatureError> {
         self.multipart_verify(&[message], signature)
+    }
+}
+
+impl VerifyingKey {
+    /// Verify a signature using the hEEA half-size scalar optimization.
+    pub fn verify_heea(
+        &self,
+        message: &[u8],
+        signature: &ed25519::Signature,
+    ) -> Result<(), SignatureError> {
+        self.raw_verify_heea::<Sha512>(&[message], signature)
     }
 }
 

@@ -67,6 +67,7 @@ impl VartimePrecomputedMultiscalarMul for VartimePrecomputedStraus {
         J::Item: Borrow<Scalar>,
         K: IntoIterator<Item = Option<Self::Point>>,
     {
+        ark_std::println!("here optional_mixed_multiscalar_mul");
         let static_nafs = static_scalars
             .into_iter()
             .map(|c| c.borrow().non_adjacent_form(5))
