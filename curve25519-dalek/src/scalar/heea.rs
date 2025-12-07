@@ -42,9 +42,9 @@ pub(crate) fn curve25519_heea_vartime(v: I256) -> (I256, I256) {
         // Compute shift amount
         let s = bl_r0 - bl_r1;
 
-        // Check if signs are the same
-        let sign_r0 = r0 < I256::ZERO;
-        let sign_r1 = r1 < I256::ZERO;
+        // Check if signs are the same (cheap flag check)
+        let sign_r0 = r0.is_negative();
+        let sign_r1 = r1.is_negative();
 
         let (r, t) = if sign_r0 == sign_r1 {
             (r0.wrapping_sub(r1 << s), t0.wrapping_sub(t1 << s))
@@ -74,12 +74,8 @@ pub(crate) fn curve25519_heea_vartime(v: I256) -> (I256, I256) {
 }
 
 /// Compute bit length of I256 (magnitude, not including sign)
-#[inline]
+#[inline(always)]
 fn bit_length_i256(v: I256) -> u32 {
-    if v.is_zero() {
-        return 0;
-    }
-
     for i in (0..4).rev() {
         let limb = v.limbs[i];
         if limb != 0 {
@@ -101,6 +97,7 @@ impl I256 {
         negative: false,
     };
 
+    #[inline(always)]
     const fn abs(&self) -> Self {
         I256 {
             limbs: self.limbs,
@@ -110,38 +107,56 @@ impl I256 {
 
     #[cfg(test)]
     pub(crate) fn new(a: i128) -> Self {
+        let mag = a.unsigned_abs() as u128;
         I256 {
-            limbs: unsafe {
-                core::mem::transmute::<[u8; 32], [u64; 4]>(
-                    [a.abs().to_le_bytes().as_ref(), [0; 16].as_ref()]
-                        .concat()
-                        .try_into()
-                        .unwrap(),
-                )
-            },
+            limbs: [
+                mag as u64,
+                (mag >> 64) as u64,
+                0,
+                0,
+            ],
             negative: a.is_negative(),
         }
     }
 
     /// Create from little-endian bytes
     pub(crate) fn from_le_bytes(bytes: [u8; 32]) -> Self {
+        let mut limbs = [0u64; 4];
+        for i in 0..4 {
+            let start = i * 8;
+            let mut chunk = [0u8; 8];
+            chunk.copy_from_slice(&bytes[start..start + 8]);
+            limbs[i] = u64::from_le_bytes(chunk);
+        }
         I256 {
-            limbs: unsafe { core::mem::transmute::<[u8; 32], [u64; 4]>(bytes) },
+            limbs,
             negative: false,
         }
     }
 
     /// Convert to little-endian bytes
     pub(crate) fn to_le_bytes(self) -> [u8; 32] {
-        unsafe { core::mem::transmute::<[u64; 4], [u8; 32]>(self.limbs) }
+        let mut out = [0u8; 32];
+        for i in 0..4 {
+            out[i * 8..i * 8 + 8].copy_from_slice(&self.limbs[i].to_le_bytes());
+        }
+        out
     }
 
     /// Check if zero
+    #[inline(always)]
     fn is_zero(&self) -> bool {
         self.limbs[0] == 0 && self.limbs[1] == 0 && self.limbs[2] == 0 && self.limbs[3] == 0
     }
 
+    /// Check if negative (< 0)
+    #[inline(always)]
+    fn is_negative(&self) -> bool {
+        self.negative && !self.is_zero()
+    }
+
     /// Wrapping negation (two's complement)
+    #[inline(always)]
     fn wrapping_neg(self) -> Self {
         if self.is_zero() {
             return Self::ZERO;
@@ -153,6 +168,7 @@ impl I256 {
     }
 
     /// Wrapping addition
+    #[inline(always)]
     fn wrapping_add(self, rhs: Self) -> Self {
         // If signs are the same, add magnitudes
         if self.negative == rhs.negative {
@@ -185,37 +201,65 @@ impl I256 {
     }
 
     /// Wrapping subtraction
+    #[inline(always)]
     fn wrapping_sub(self, rhs: Self) -> Self {
         self.wrapping_add(rhs.wrapping_neg())
     }
 
     /// Left shift
+    #[inline(always)]
     fn wrapping_shl(self, shift: u32) -> Self {
-        if shift >= 256 {
-            return Self::ZERO;
-        }
         if shift == 0 {
             return self;
         }
+        if shift >= 256 {
+            return Self::ZERO;
+        }
 
         let limb_shift = (shift / 64) as usize;
-        let bit_shift = shift % 64;
-
+        let bit_shift = shift & 63;
+        let l = self.limbs;
         let mut result = [0u64; 4];
 
         if bit_shift == 0 {
-            // Simple limb shift
-            for i in limb_shift..4 {
-                result[i] = self.limbs[i - limb_shift];
+            match limb_shift {
+                0 => return self,
+                1 => {
+                    result[1] = l[0];
+                    result[2] = l[1];
+                    result[3] = l[2];
+                }
+                2 => {
+                    result[2] = l[0];
+                    result[3] = l[1];
+                }
+                3 => {
+                    result[3] = l[0];
+                }
+                _ => {}
             }
         } else {
-            // Shift with carry between limbs
-            for i in limb_shift..4 {
-                let src_idx = i - limb_shift;
-                result[i] = self.limbs[src_idx] << bit_shift;
-                if src_idx > 0 {
-                    result[i] |= self.limbs[src_idx - 1] >> (64 - bit_shift);
+            let carry = 64 - bit_shift;
+            match limb_shift {
+                0 => {
+                    result[0] = l[0] << bit_shift;
+                    result[1] = (l[1] << bit_shift) | (l[0] >> carry);
+                    result[2] = (l[2] << bit_shift) | (l[1] >> carry);
+                    result[3] = (l[3] << bit_shift) | (l[2] >> carry);
                 }
+                1 => {
+                    result[1] = l[0] << bit_shift;
+                    result[2] = (l[1] << bit_shift) | (l[0] >> carry);
+                    result[3] = (l[2] << bit_shift) | (l[1] >> carry);
+                }
+                2 => {
+                    result[2] = l[0] << bit_shift;
+                    result[3] = (l[1] << bit_shift) | (l[0] >> carry);
+                }
+                3 => {
+                    result[3] = l[0] << bit_shift;
+                }
+                _ => {}
             }
         }
 
@@ -229,14 +273,12 @@ impl I256 {
 impl Neg for I256 {
     type Output = Self;
     fn neg(self) -> <Self as Neg>::Output {
-        Self {
-            limbs: self.limbs,
-            negative: !self.negative,
-        }
+        self.wrapping_neg()
     }
 }
 
 // Helper: Add two magnitude arrays, returns (result, overflow_occurred)
+#[inline(always)]
 fn add_limbs(a: &[u64; 4], b: &[u64; 4]) -> ([u64; 4], bool) {
     let mut result = [0u64; 4];
     let mut carry;
@@ -251,6 +293,7 @@ fn add_limbs(a: &[u64; 4], b: &[u64; 4]) -> ([u64; 4], bool) {
 
 // Helper: Subtract b from a, returns (result, underflow)
 // If underflow is true, then a < b and the result is the two's complement
+#[inline(always)]
 fn sub_limbs(a: &[u64; 4], b: &[u64; 4]) -> ([u64; 4], bool) {
     let mut result = [0u64; 4];
     let mut borrow;
@@ -264,6 +307,7 @@ fn sub_limbs(a: &[u64; 4], b: &[u64; 4]) -> ([u64; 4], bool) {
 }
 
 // Helper: Compare magnitudes of two limb arrays
+#[inline(always)]
 fn cmp_magnitude(a: &[u64; 4], b: &[u64; 4]) -> core::cmp::Ordering {
     for i in (0..4).rev() {
         match a[i].cmp(&b[i]) {
