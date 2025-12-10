@@ -4,9 +4,6 @@
 // Copyright (c) 2016-2021 isis lovecruft
 // Copyright (c) 2016-2019 Henry de Valence
 // See LICENSE for licensing information.
-//
-// Authors:
-// - zhenfei zhang <zhangzhenfei@gmail.com>
 
 #![allow(non_snake_case)]
 
