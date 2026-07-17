@@ -33,12 +33,12 @@ curve25519-dalek = { version = "=5.0.0-pre.4", default-features = false, feature
 ] }
 ed25519 = { version = "3.0.0-rc.2", default-features = false }
 signature = { version = "3.0.0-rc.5", optional = true, default-features = false }
-sha2 = { version = "0.11.0-rc.3", default-features = false }
+sha2 = { version = "=0.11.0-rc.3", default-features = false }
 subtle = { version = "2.3.0", default-features = false }
 
 # optional features
-keccak = { version = "0.2.0-rc.0", default-features = false, optional = true }
-rand_core = { version = "0.10.0-rc-3", default-features = false, optional = true }
+keccak = { version = "=0.2.0-rc.0", default-features = false, optional = true }
+rand_core = { version = "=0.10.0-rc-3", default-features = false, optional = true }
 serde = { version = "1.0", default-features = false, optional = true }
 zeroize = { version = "1.5", default-features = false, optional = true }
 
