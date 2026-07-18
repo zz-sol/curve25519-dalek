@@ -180,7 +180,7 @@ use crate::field::FieldElement;
 #[cfg(feature = "group")]
 use {
     group::{GroupEncoding, cofactor::CofactorGroup, prime::PrimeGroup},
-    rand_core::TryRngCore,
+    rand_core::TryRng,
     subtle::CtOption,
 };
 
@@ -543,12 +543,12 @@ impl RistrettoPoint {
     #[cfg_attr(feature = "rand_core", doc = "```")]
     #[cfg_attr(not(feature = "rand_core"), doc = "```ignore")]
     /// # use curve25519_dalek::ristretto::RistrettoPoint;
-    /// use rand::{rngs::SysRng, TryRngCore};
+    /// use getrandom::{SysRng, rand_core::UnwrapErr};
     ///
     /// # // Need fn main() here in comment so the doctest compiles
     /// # // See https://doc.rust-lang.org/book/documentation.html#documentation-as-tests
     /// # fn main() {
-    /// let mut rng = SysRng.unwrap_err();
+    /// let mut rng = UnwrapErr(SysRng);
     ///
     /// let points: Vec<RistrettoPoint> =
     ///     (0..32).map(|_| RistrettoPoint::random(&mut rng)).collect();
@@ -674,7 +674,7 @@ impl RistrettoPoint {
     /// results are added, to ensure a uniform distribution.
     #[cfg(feature = "rand_core")]
     pub fn random<R: CryptoRng + ?Sized>(rng: &mut R) -> Self {
-        Self::try_from_rng(rng)
+        Self::try_random(rng)
             .map_err(|_: Infallible| {})
             .expect("[bug] unfallible rng failed")
     }
@@ -696,7 +696,7 @@ impl RistrettoPoint {
     /// point should be unknown.  The map is applied twice and the
     /// results are added, to ensure a uniform distribution.
     #[cfg(feature = "rand_core")]
-    pub fn try_from_rng<R: TryCryptoRng + ?Sized>(rng: &mut R) -> Result<Self, R::Error> {
+    pub fn try_random<R: TryCryptoRng + ?Sized>(rng: &mut R) -> Result<Self, R::Error> {
         let mut uniform_bytes = [0u8; 64];
         rng.try_fill_bytes(&mut uniform_bytes)?;
 
@@ -1179,7 +1179,7 @@ impl Debug for RistrettoPoint {
 impl group::Group for RistrettoPoint {
     type Scalar = Scalar;
 
-    fn try_from_rng<R: TryRngCore + ?Sized>(rng: &mut R) -> Result<Self, R::Error> {
+    fn try_random<R: TryRng + ?Sized>(rng: &mut R) -> Result<Self, R::Error> {
         // NOTE: this is duplicated due to different `rng` bounds
         let mut uniform_bytes = [0u8; 64];
         rng.try_fill_bytes(&mut uniform_bytes)?;
@@ -1275,33 +1275,33 @@ impl Zeroize for RistrettoPoint {
 mod test {
     use super::*;
     use crate::edwards::CompressedEdwardsY;
+    #[cfg(feature = "rand_core")]
+    use getrandom::{SysRng, rand_core::UnwrapErr};
     #[cfg(feature = "group")]
     use proptest::prelude::*;
-    #[cfg(feature = "rand_core")]
-    use rand::{TryRngCore, rngs::SysRng};
 
     #[test]
     #[cfg(feature = "serde")]
-    fn serde_bincode_basepoint_roundtrip() {
-        use bincode;
-
-        let encoded = bincode::serialize(&constants::RISTRETTO_BASEPOINT_POINT).unwrap();
+    fn serde_postcard_basepoint_roundtrip() {
+        let encoded = postcard::to_allocvec(&constants::RISTRETTO_BASEPOINT_POINT).unwrap();
         let enc_compressed =
-            bincode::serialize(&constants::RISTRETTO_BASEPOINT_COMPRESSED).unwrap();
+            postcard::to_allocvec(&constants::RISTRETTO_BASEPOINT_COMPRESSED).unwrap();
         assert_eq!(encoded, enc_compressed);
 
         // Check that the encoding is 32 bytes exactly
         assert_eq!(encoded.len(), 32);
 
-        let dec_uncompressed: RistrettoPoint = bincode::deserialize(&encoded).unwrap();
-        let dec_compressed: CompressedRistretto = bincode::deserialize(&encoded).unwrap();
+        let dec_uncompressed: RistrettoPoint = postcard::from_bytes(&encoded).unwrap();
+        let dec_compressed: CompressedRistretto = postcard::from_bytes(&encoded).unwrap();
 
         assert_eq!(dec_uncompressed, constants::RISTRETTO_BASEPOINT_POINT);
         assert_eq!(dec_compressed, constants::RISTRETTO_BASEPOINT_COMPRESSED);
 
-        // Check that the encoding itself matches the usual one
+        // Check that the encoding itself matches the usual one.
+        // serde::Deserialize on fixed-size arrays calls tuple deserialization. postcard
+        // (de)serializes tuples by just doing each element and that's it.
         let raw_bytes = constants::RISTRETTO_BASEPOINT_COMPRESSED.as_bytes();
-        let bp: RistrettoPoint = bincode::deserialize(raw_bytes).unwrap();
+        let bp: RistrettoPoint = postcard::from_bytes(raw_bytes).unwrap();
         assert_eq!(bp, constants::RISTRETTO_BASEPOINT_POINT);
     }
 
@@ -1472,7 +1472,7 @@ mod test {
     #[cfg(feature = "rand_core")]
     #[test]
     fn four_torsion_random() {
-        let mut rng = SysRng.unwrap_err();
+        let mut rng = UnwrapErr(SysRng);
         let P = RistrettoPoint::mul_base(&Scalar::random(&mut rng));
         let P_coset = P.coset4();
         for point in P_coset {
@@ -1483,7 +1483,7 @@ mod test {
     #[cfg(feature = "rand_core")]
     #[test]
     fn random_roundtrip() {
-        let mut rng = SysRng.unwrap_err();
+        let mut rng = UnwrapErr(SysRng);
         for _ in 0..100 {
             let P = RistrettoPoint::mul_base(&Scalar::random(&mut rng));
             let compressed_P = P.compress();
@@ -1499,7 +1499,7 @@ mod test {
         let mut rng = SysRng;
 
         let mut points: Vec<RistrettoPoint> = (0..1024)
-            .map(|_| RistrettoPoint::try_from_rng(&mut rng).unwrap())
+            .map(|_| RistrettoPoint::try_random(&mut rng).unwrap())
             .collect();
         points[500] = <RistrettoPoint as Group>::identity();
 
@@ -1546,7 +1546,7 @@ mod test {
     #[test]
     #[cfg(all(feature = "alloc", feature = "rand_core"))]
     fn vartime_precomputed_vs_nonprecomputed_multiscalar() {
-        let mut rng = rand::rng();
+        let mut rng = UnwrapErr(SysRng);
 
         let static_scalars = (0..128)
             .map(|_| Scalar::random(&mut rng))
@@ -1597,7 +1597,7 @@ mod test {
     #[test]
     #[cfg(all(feature = "alloc", feature = "rand_core"))]
     fn partial_precomputed_mixed_multiscalar_empty() {
-        let mut rng = rand::rng();
+        let mut rng = UnwrapErr(SysRng);
 
         let n_static = 16;
         let n_dynamic = 8;
@@ -1640,7 +1640,7 @@ mod test {
     #[test]
     #[cfg(all(feature = "alloc", feature = "rand_core"))]
     fn partial_precomputed_mixed_multiscalar() {
-        let mut rng = rand::rng();
+        let mut rng = UnwrapErr(SysRng);
 
         let n_static = 16;
         let n_dynamic = 8;
@@ -1685,7 +1685,7 @@ mod test {
     #[test]
     #[cfg(all(feature = "alloc", feature = "rand_core"))]
     fn partial_precomputed_multiscalar() {
-        let mut rng = rand::rng();
+        let mut rng = UnwrapErr(SysRng);
 
         let n_static = 16;
 
@@ -1714,7 +1714,7 @@ mod test {
     #[test]
     #[cfg(all(feature = "alloc", feature = "rand_core"))]
     fn partial_precomputed_multiscalar_empty() {
-        let mut rng = rand::rng();
+        let mut rng = UnwrapErr(SysRng);
 
         let n_static = 16;
 

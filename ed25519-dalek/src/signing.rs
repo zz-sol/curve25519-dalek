@@ -20,6 +20,15 @@ use rand_core::CryptoRng;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+#[cfg(feature = "digest")]
+use curve25519_dalek::digest::{
+    common::{InvalidKey, Key, KeySizeUser, TryKeyInit},
+    typenum::U32,
+};
+
+#[cfg(all(feature = "digest", feature = "rand_core"))]
+use curve25519_dalek::digest::common::Generate;
+
 use sha2::Sha512;
 use subtle::{Choice, ConstantTimeEq};
 
@@ -189,11 +198,10 @@ impl SigningKey {
     #[cfg_attr(feature = "rand_core", doc = "```")]
     #[cfg_attr(not(feature = "rand_core"), doc = "```ignore")]
     /// # fn main() {
-    /// use rand::rngs::SysRng;
-    /// use rand_core::TryRngCore;
+    /// use getrandom::{SysRng, rand_core::{TryRng, UnwrapErr}};
     /// use ed25519_dalek::{Signature, SigningKey};
     ///
-    /// let mut csprng = SysRng.unwrap_err();
+    /// let mut csprng = UnwrapErr(SysRng);
     /// let signing_key: SigningKey = SigningKey::generate(&mut csprng);
     /// # }
     /// ```
@@ -242,11 +250,10 @@ impl SigningKey {
     /// use ed25519_dalek::SigningKey;
     /// use ed25519_dalek::Signature;
     /// use sha2::Sha512;
-    /// use rand::rngs::SysRng;
-    /// use rand_core::TryRngCore;
+    /// use getrandom::{SysRng, rand_core::{TryRng, UnwrapErr}};
     ///
     /// # fn main() {
-    /// let mut csprng = SysRng.unwrap_err();
+    /// let mut csprng = UnwrapErr(SysRng);
     /// let signing_key: SigningKey = SigningKey::generate(&mut csprng);
     /// let message: &[u8] = b"All I want is to pet all of the dogs.";
     ///
@@ -288,11 +295,10 @@ impl SigningKey {
     /// # use ed25519_dalek::Signature;
     /// # use ed25519_dalek::SignatureError;
     /// # use sha2::Sha512;
-    /// # use rand::rngs::SysRng;
-    /// # use rand_core::TryRngCore;
+    /// # use getrandom::{SysRng, rand_core::{TryRng, UnwrapErr}};
     /// #
     /// # fn do_test() -> Result<Signature, SignatureError> {
-    /// # let mut csprng = SysRng.unwrap_err();
+    /// # let mut csprng = UnwrapErr(SysRng);
     /// # let signing_key: SigningKey = SigningKey::generate(&mut csprng);
     /// # let message: &[u8] = b"All I want is to pet all of the dogs.";
     /// # let mut prehashed: Sha512 = Sha512::new();
@@ -368,11 +374,10 @@ impl SigningKey {
     /// use ed25519_dalek::Signature;
     /// use ed25519_dalek::SignatureError;
     /// use sha2::Sha512;
-    /// use rand::rngs::SysRng;
-    /// use rand_core::TryRngCore;
+    /// use getrandom::{SysRng, rand_core::{TryRng, UnwrapErr}};
     ///
     /// # fn do_test() -> Result<(), SignatureError> {
-    /// let mut csprng = SysRng.unwrap_err();
+    /// let mut csprng = UnwrapErr(SysRng);
     /// let signing_key: SigningKey = SigningKey::generate(&mut csprng);
     /// let message: &[u8] = b"All I want is to pet all of the dogs.";
     ///
@@ -546,6 +551,29 @@ impl SigningKey {
         // clamped and reduced (see ExpandedSecretKey::from_bytes). We return the clamped and
         // reduced form.
         ExpandedSecretKey::from(&self.secret_key).scalar
+    }
+}
+
+#[cfg(feature = "digest")]
+impl KeySizeUser for SigningKey {
+    type KeySize = U32;
+}
+
+#[cfg(feature = "digest")]
+impl TryKeyInit for SigningKey {
+    fn new(key: &Key<Self>) -> Result<Self, InvalidKey> {
+        Ok(Self::from_bytes(key.as_ref()))
+    }
+}
+
+#[cfg(all(feature = "digest", feature = "rand_core"))]
+impl Generate for SigningKey {
+    fn try_generate_from_rng<R: rand_core::TryCryptoRng + ?Sized>(
+        rng: &mut R,
+    ) -> Result<Self, R::Error> {
+        let mut secret = SecretKey::default();
+        rng.try_fill_bytes(&mut secret)?;
+        Ok(Self::from_bytes(&secret))
     }
 }
 
@@ -723,10 +751,10 @@ impl TryFrom<&pkcs8::KeypairBytes> for SigningKey {
         // Validate the public key in the PKCS#8 document if present
         if let Some(public_bytes) = &pkcs8_key.public_key {
             let expected_verifying_key = VerifyingKey::from_bytes(public_bytes.as_ref())
-                .map_err(|_| pkcs8::Error::KeyMalformed)?;
+                .map_err(|_| pkcs8::Error::KeyMalformed(pkcs8::KeyError::Invalid))?;
 
             if signing_key.verifying_key() != expected_verifying_key {
-                return Err(pkcs8::Error::KeyMalformed);
+                return Err(pkcs8::Error::KeyMalformed(pkcs8::KeyError::Invalid));
             }
         }
 
@@ -790,7 +818,7 @@ impl<'d> Deserialize<'d> for SigningKey {
             type Value = SigningKey;
 
             fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                write!(formatter, concat!("An ed25519 signing (private) key"))
+                write!(formatter, "An ed25519 signing (private) key")
             }
 
             fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> Result<Self::Value, E> {

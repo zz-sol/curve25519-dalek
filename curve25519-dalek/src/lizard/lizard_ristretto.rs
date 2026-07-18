@@ -33,13 +33,14 @@ impl RistrettoPoint {
         fe_bytes[8..24].copy_from_slice(data);
         // Clear the appropriate bits to be able to call map_to_curve_restricted
         fe_bytes[31] &= 0b00111111;
+        // Clearing the lowest bit makes the field element positive
         fe_bytes[0] &= 0b11111110;
 
         RistrettoPoint::map_to_curve_restricted(fe_bytes)
     }
 
-    /// Decode 16 bytes of data from a RistrettoPoint, using the Lizard method. Returns `None` if
-    /// this point was not generated using Lizard.
+    /// Decode 16 bytes of data from a RistrettoPoint, using [`RistrettoPoint::lizard_encode`].
+    /// Returns `None` if this point was not generated using Lizard.
     pub fn lizard_decode<D>(&self) -> Option<[u8; 16]>
     where
         D: Digest<OutputSize = U32> + HashMarker,
@@ -47,7 +48,10 @@ impl RistrettoPoint {
         let mut result: [u8; 16] = Default::default();
         let fes = self.elligator_ristretto_flavor_inverse();
         let mut n_found = 0;
-        for fe in fes {
+        // elligator_ristretto_flavor_inverse returns 8 positive solutions followed by 8 negative
+        // solutions. Since lizard_encode only ever encodes positive field elements, it suffices to
+        // just check those
+        for fe in fes.into_iter().take(8) {
             let mut ok = fe.is_some();
             let fe = fe.unwrap_or(FieldElement::ZERO);
             let bytes = fe.to_bytes();
@@ -70,8 +74,11 @@ impl RistrettoPoint {
         if n_found == 1 { Some(result) } else { None }
     }
 
-    /// Computes the at most 8 positive FieldElements f such that `self ==
+    /// Computes the at most 16 FieldElements f such that `self ==
     /// RistrettoPoint::elligator_ristretto_flavor(f)`.
+    /// The first 8 return values are positive field elements (i.e., have the LSB (`bytes[0] & 1`)
+    /// unset), if defined. The last 8 return values are negative field elements (i.e., have the LSB
+    /// set), if defined.
     fn elligator_ristretto_flavor_inverse(&self) -> [CtOption<FieldElement>; 16] {
         // Elligator2 computes a Point from a FieldElement in two steps: first
         // it computes a (s,t) on the Jacobi quartic and then computes the
@@ -220,7 +227,8 @@ impl RistrettoPoint {
 mod test {
     use super::*;
     use crate::{edwards::EdwardsPoint, ristretto::CompressedRistretto};
-    use rand_core::RngCore;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
+    use rand_core::Rng;
     use sha2::Sha256;
 
     /// Return the coset self + E\[4\]
@@ -281,7 +289,7 @@ mod test {
     // Tests that lizard_decode of a random point is None
     #[test]
     fn lizard_invalid() {
-        let mut rng = rand::rng();
+        let mut rng = UnwrapErr(SysRng);
         for _ in 0..100 {
             let pt = RistrettoPoint::random(&mut rng);
             assert!(
@@ -297,7 +305,7 @@ mod test {
     // is the identity
     #[test]
     fn elligator_inv() {
-        let mut rng = rand::rng();
+        let mut rng = UnwrapErr(SysRng);
 
         for i in 0..100 {
             let mut fe_bytes = [0u8; 32];
@@ -342,7 +350,7 @@ mod test {
     // Tests that map_to_curve ○ map_to_curve_inverse is the identity
     #[test]
     fn map_to_curve_inverse() {
-        let mut rng = rand::rng();
+        let mut rng = UnwrapErr(SysRng);
 
         for _ in 0..100 {
             let mut input = [0u8; 32];
@@ -365,7 +373,7 @@ mod test {
     // return value in the first 8 elements
     #[test]
     fn map_pos_felem_to_curve_inverse() {
-        let mut rng = rand::rng();
+        let mut rng = UnwrapErr(SysRng);
 
         for _ in 0..100 {
             let mut input = [0u8; 32];

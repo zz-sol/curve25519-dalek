@@ -1,5 +1,6 @@
 use super::MERLIN_PROTOCOL_LABEL;
-use super::strobe::Strobe128;
+use core::convert::Infallible;
+use strobe_rs::{SecParam, Strobe};
 
 fn encode_usize_as_u32(x: usize) -> [u8; 4] {
     u32::try_from(x).expect("usize too large").to_le_bytes()
@@ -36,7 +37,7 @@ fn encode_usize_as_u32(x: usize) -> [u8; 4] {
 /// Merlin](https://merlin.cool/use/index.html) section.
 #[derive(Clone)]
 pub struct Transcript {
-    strobe: Strobe128,
+    strobe: Strobe,
 }
 
 impl Transcript {
@@ -52,7 +53,7 @@ impl Transcript {
     /// the Merlin website for more details on why.
     pub fn new(label: &'static [u8]) -> Transcript {
         let mut transcript = Transcript {
-            strobe: Strobe128::new(MERLIN_PROTOCOL_LABEL),
+            strobe: Strobe::new(MERLIN_PROTOCOL_LABEL, SecParam::B128),
         };
         transcript.append_message(b"dom-sep", label);
 
@@ -128,7 +129,7 @@ impl Transcript {
 /// [rekey_with_witness_bytes]: TranscriptRngBuilder::rekey_with_witness_bytes
 /// [finalize]: TranscriptRngBuilder::finalize
 pub struct TranscriptRngBuilder {
-    strobe: Strobe128,
+    strobe: Strobe,
 }
 
 impl TranscriptRngBuilder {
@@ -155,7 +156,7 @@ impl TranscriptRngBuilder {
     /// transcript data.
     pub fn finalize<R>(mut self, rng: &mut R) -> TranscriptRng
     where
-        R: rand_core::RngCore + rand_core::CryptoRng,
+        R: rand_core::Rng + rand_core::CryptoRng,
     {
         let random_bytes = {
             let mut bytes = [0u8; 32];
@@ -182,26 +183,30 @@ impl TranscriptRngBuilder {
 /// Randomness](https://merlin.cool/transcript/rng.html) section of
 /// the Merlin website.
 pub struct TranscriptRng {
-    strobe: Strobe128,
+    strobe: Strobe,
 }
 
-impl rand_core::RngCore for TranscriptRng {
-    fn next_u32(&mut self) -> u32 {
+impl rand_core::TryRng for TranscriptRng {
+    type Error = Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
         rand_core::utils::next_word_via_fill(self)
     }
 
-    fn next_u64(&mut self) -> u64 {
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
         rand_core::utils::next_word_via_fill(self)
     }
 
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
         let dest_len = encode_usize_as_u32(dest.len());
         self.strobe.meta_ad(&dest_len, false);
         self.strobe.prf(dest, false);
+
+        Ok(())
     }
 }
 
-impl rand_core::CryptoRng for TranscriptRng {}
+impl rand_core::TryCryptoRng for TranscriptRng {}
 
 #[cfg(test)]
 mod tests {
@@ -304,8 +309,9 @@ mod tests {
 
     #[test]
     fn transcript_rng_is_bound_to_transcript_and_witnesses() {
+        use chacha20::ChaCha8Rng;
         use curve25519_dalek::scalar::Scalar;
-        use rand::{SeedableRng, rngs::ChaCha8Rng};
+        use rand_core::SeedableRng;
 
         // Check that the TranscriptRng is bound to the transcript and
         // the witnesses.  This is done by producing a sequence of
