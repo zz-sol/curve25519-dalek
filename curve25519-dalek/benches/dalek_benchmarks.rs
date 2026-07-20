@@ -77,7 +77,7 @@ mod edwards_benches {
 
     fn vartime_triple_base_scalar_mul_128<M: Measurement>(c: &mut BenchmarkGroup<M>) {
         c.bench_function("Variable-time a1*A1+a2*A2+b*B (128-bit a1,a2)", |bench| {
-            let mut rng = rng();
+            let mut rng = UnwrapErr(SysRng);
             let A1 = EdwardsPoint::mul_base(&Scalar::random(&mut rng));
             let A2 = EdwardsPoint::mul_base(&Scalar::random(&mut rng));
 
@@ -88,10 +88,8 @@ mod edwards_benches {
                     let mut a2_bytes = [0u8; 32];
 
                     // Fill lower 16 bytes with random data, upper 16 bytes are zero
-                    for i in 0..16 {
-                        a1_bytes[i] = rng.next_u32() as u8;
-                        a2_bytes[i] = rng.next_u32() as u8;
-                    }
+                    rng.fill_bytes(&mut a1_bytes[..16]);
+                    rng.fill_bytes(&mut a2_bytes[..16]);
 
                     let a1 = Scalar::from_bytes_mod_order(a1_bytes);
                     let a2 = Scalar::from_bytes_mod_order(a2_bytes);
