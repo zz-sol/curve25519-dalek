@@ -37,6 +37,8 @@
 use crate::EdwardsPoint;
 use crate::Scalar;
 
+mod util;
+
 pub mod serial;
 
 #[cfg(curve25519_dalek_backend = "simd")]
