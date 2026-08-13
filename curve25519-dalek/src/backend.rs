@@ -36,6 +36,7 @@
 
 use crate::EdwardsPoint;
 use crate::Scalar;
+use crate::scalar::HalfWidthScalar;
 
 mod util;
 
@@ -280,12 +281,13 @@ pub fn vartime_double_base_mul(a: &Scalar, A: &EdwardsPoint, b: &Scalar) -> Edwa
 
 /// Compute \\(a_1 A_1 + a_2 A_2 + b B\\) in variable time, where \\(B\\) is the Ed25519 basepoint.
 ///
-/// This function is optimized for the case where \\(a_1\\) and \\(a_2\\) are less than \\(2^{128}\\).
+/// \\(a_1\\) and \\(a_2\\) are [`HalfWidthScalar`]s, i.e. they are less than \\(2^{128}\\), which
+/// lets this run in roughly half the doublings of the general case.
 #[allow(non_snake_case)]
 pub fn vartime_triple_base_mul_128_128_256(
-    a1: &Scalar,
+    a1: &HalfWidthScalar,
     A1: &EdwardsPoint,
-    a2: &Scalar,
+    a2: &HalfWidthScalar,
     A2: &EdwardsPoint,
     b: &Scalar,
 ) -> EdwardsPoint {

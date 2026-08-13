@@ -10,7 +10,7 @@ use criterion::{
 use sha2::Sha512;
 
 use curve25519_dalek::constants;
-use curve25519_dalek::scalar::Scalar;
+use curve25519_dalek::scalar::{HalfWidthScalar, Scalar};
 
 static BATCH_SIZES: [usize; 5] = [1, 2, 4, 8, 16];
 static MULTISCALAR_SIZES: [usize; 13] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 384, 512, 768, 1024];
@@ -84,15 +84,13 @@ mod edwards_benches {
             bench.iter_batched(
                 || {
                     // Generate 128-bit scalars for a1 and a2
-                    let mut a1_bytes = [0u8; 32];
-                    let mut a2_bytes = [0u8; 32];
+                    let mut a1_bytes = [0u8; 16];
+                    let mut a2_bytes = [0u8; 16];
+                    rng.fill_bytes(&mut a1_bytes);
+                    rng.fill_bytes(&mut a2_bytes);
 
-                    // Fill lower 16 bytes with random data, upper 16 bytes are zero
-                    rng.fill_bytes(&mut a1_bytes[..16]);
-                    rng.fill_bytes(&mut a2_bytes[..16]);
-
-                    let a1 = Scalar::from_bytes_mod_order(a1_bytes);
-                    let a2 = Scalar::from_bytes_mod_order(a2_bytes);
+                    let a1 = HalfWidthScalar::from_bytes(a1_bytes);
+                    let a2 = HalfWidthScalar::from_bytes(a2_bytes);
                     let b = Scalar::random(&mut rng);
 
                     (a1, a2, b)

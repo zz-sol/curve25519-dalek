@@ -131,7 +131,7 @@ use zeroize::Zeroize;
 use crate::constants;
 
 use crate::field::FieldElement;
-use crate::scalar::{Scalar, clamp_integer};
+use crate::scalar::{HalfWidthScalar, Scalar, clamp_integer};
 
 use crate::montgomery::MontgomeryPoint;
 
@@ -1087,17 +1087,22 @@ impl EdwardsPoint {
 
     /// Compute \\(a_1 A_1 + a_2 A_2 + b B\\) in variable time, where \\(B\\) is the Ed25519 basepoint.
     ///
-    /// This function is optimized for the case where \\(a_1\\) and \\(a_2\\) are less than \\(2^{128}\\).
+    /// Taking \\(a_1\\) and \\(a_2\\) as [`HalfWidthScalar`]s — scalars known to be less than
+    /// \\(2^{128}\\) — lets this run in roughly half the doublings of the general case. The bound
+    /// is checked once, when the [`HalfWidthScalar`] is constructed, so this function itself
+    /// cannot fail and never panics.
+    ///
+    /// [`HalfWidthScalar`]: crate::scalar::HalfWidthScalar
     ///
     /// # Example
     ///
     /// ```
-    /// use curve25519_dalek::scalar::Scalar;
+    /// use curve25519_dalek::scalar::{HalfWidthScalar, Scalar};
     /// use curve25519_dalek::constants::ED25519_BASEPOINT_POINT;
     /// use curve25519_dalek::edwards::EdwardsPoint;
     ///
-    /// let a1 = Scalar::from(123u64);
-    /// let a2 = Scalar::from(456u64);
+    /// let a1 = HalfWidthScalar::from(123u64);
+    /// let a2 = HalfWidthScalar::from(456u64);
     /// let b = Scalar::from(789u64);
     ///
     /// let A1 = &ED25519_BASEPOINT_POINT * &Scalar::from(2u64);
@@ -1105,12 +1110,16 @@ impl EdwardsPoint {
     ///
     /// // Compute a1*A1 + a2*A2 + b*B efficiently
     /// let result = EdwardsPoint::vartime_triple_scalar_mul_basepoint(&a1, &A1, &a2, &A2, &b);
+    ///
+    /// // An arbitrary `Scalar` has to be narrowed first, which fails if it is too large.
+    /// assert!(HalfWidthScalar::from_scalar(Scalar::from(789u64)).is_some());
+    /// assert!(HalfWidthScalar::from_scalar(-Scalar::ONE).is_none());
     /// ```
     #[allow(non_snake_case)]
     pub fn vartime_triple_scalar_mul_basepoint(
-        a1: &Scalar,
+        a1: &HalfWidthScalar,
         A1: &EdwardsPoint,
-        a2: &Scalar,
+        a2: &HalfWidthScalar,
         A2: &EdwardsPoint,
         b: &Scalar,
     ) -> EdwardsPoint {
