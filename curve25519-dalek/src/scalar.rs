@@ -1417,13 +1417,25 @@ pub const fn clamp_integer(mut bytes: [u8; 32]) -> [u8; 32] {
 ///
 /// Some variable-time algorithms are roughly twice as fast when a scalar is known to fit in the
 /// low half of its encoding, because they only have to walk 128 digits instead of 256 — see
-/// [`EdwardsPoint::vartime_triple_scalar_mul_basepoint`]. Those algorithms take a
-/// `HalfWidthScalar` instead of a [`Scalar`], so the bound is established once, by the
-/// constructor, rather than assumed (or re-checked) at every call site.
+/// [`EdwardsPoint::vartime_triple_scalar_mul_basepoint`].
 ///
 /// [`EdwardsPoint::vartime_triple_scalar_mul_basepoint`]: crate::edwards::EdwardsPoint::vartime_triple_scalar_mul_basepoint
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct HalfWidthScalar(Scalar);
+
+impl TryFrom<Scalar> for HalfWidthScalar {
+    type Error = ();
+
+    /// Attempt to view `scalar` as a `HalfWidthScalar`. Returns `Ok` if `value` is less
+    /// than \\( 2^{128} \\)
+    fn try_from(value: Scalar) -> Result<Self, Self::Error> {
+        if value.bytes[16..].iter().all(|&byte| byte == 0) {
+            Ok(Self(value))
+        } else {
+            Err(())
+        }
+    }
+}
 
 impl HalfWidthScalar {
     /// The scalar \\( 0 \\).
@@ -1445,23 +1457,6 @@ impl HalfWidthScalar {
         // 2^128 < l, so the result is a canonical representative and both `Scalar` invariants
         // hold.
         Self(Scalar { bytes: s_bytes })
-    }
-
-    /// Attempt to view `scalar` as a `HalfWidthScalar`.
-    ///
-    /// # Return
-    ///
-    /// - `Some(s)` if `scalar` is less than \\( 2^{128} \\);
-    /// - `None` otherwise.
-    ///
-    /// The return value reveals whether the bound holds, so this is only appropriate where the
-    /// magnitude of `scalar` is not secret.
-    pub fn from_scalar(scalar: Scalar) -> Option<Self> {
-        if scalar.bytes[16..].iter().all(|&byte| byte == 0) {
-            Some(Self(scalar))
-        } else {
-            None
-        }
     }
 
     /// View this scalar as a full-width [`Scalar`].
@@ -2308,29 +2303,29 @@ pub(crate) mod test {
     fn half_width_scalar_from_scalar_accepts_up_to_the_bound() {
         // 2^128 - 1 is the largest accepted value.
         let max = Scalar::from(u128::MAX);
-        let half = HalfWidthScalar::from_scalar(max).expect("2^128 - 1 is half-width");
+        let half = HalfWidthScalar::try_from(max).expect("2^128 - 1 is half-width");
         assert_eq!(half.as_scalar(), &max);
         assert_eq!(half, HalfWidthScalar::from(u128::MAX));
 
         // Zero and one are trivially accepted.
-        assert!(HalfWidthScalar::from_scalar(Scalar::ZERO).is_some());
-        assert!(HalfWidthScalar::from_scalar(Scalar::ONE).is_some());
+        assert!(HalfWidthScalar::try_from(Scalar::ZERO).is_ok());
+        assert!(HalfWidthScalar::try_from(Scalar::ONE).is_ok());
     }
 
     #[test]
     fn half_width_scalar_from_scalar_rejects_the_bound_and_above() {
         // 2^128 itself is one too many: rejected, rather than silently truncated to zero.
-        assert!(HalfWidthScalar::from_scalar(two_pow_128()).is_none());
+        assert!(HalfWidthScalar::try_from(two_pow_128()).is_err());
 
         // So is anything larger, including a full-width random scalar and -1 mod l.
-        assert!(HalfWidthScalar::from_scalar(two_pow_128() + Scalar::ONE).is_none());
-        assert!(HalfWidthScalar::from_scalar(-Scalar::ONE).is_none());
-        assert!(HalfWidthScalar::from_scalar(X).is_none());
+        assert!(HalfWidthScalar::try_from(two_pow_128() + Scalar::ONE).is_err());
+        assert!(HalfWidthScalar::try_from(-Scalar::ONE).is_err());
+        assert!(HalfWidthScalar::try_from(X).is_err());
 
         // Every rejection is because bit 128 or above is set; check the boundary bit directly.
         let mut just_over = [0u8; 32];
         just_over[16] = 1;
-        assert!(HalfWidthScalar::from_scalar(Scalar { bytes: just_over }).is_none());
+        assert!(HalfWidthScalar::try_from(Scalar { bytes: just_over }).is_err());
     }
 
     #[test]
@@ -2340,7 +2335,7 @@ pub(crate) mod test {
         // `Scalar::from(HalfWidthScalar)` and `from_scalar` are inverse.
         let as_scalar = Scalar::from(x);
         assert_eq!(&as_scalar, x.as_scalar());
-        assert_eq!(HalfWidthScalar::from_scalar(as_scalar), Some(x));
+        assert_eq!(HalfWidthScalar::try_from(as_scalar), Ok(x));
     }
 
     #[test]
@@ -2393,8 +2388,8 @@ pub(crate) mod test {
 
             // Both halves must satisfy the `HalfWidthScalar` bound by construction, so feeding
             // them back through the checked constructor must succeed.
-            assert_eq!(HalfWidthScalar::from_scalar(*lo.as_scalar()), Some(lo));
-            assert_eq!(HalfWidthScalar::from_scalar(*hi.as_scalar()), Some(hi));
+            assert_eq!(HalfWidthScalar::try_from(*lo.as_scalar()), Ok(lo));
+            assert_eq!(HalfWidthScalar::try_from(*hi.as_scalar()), Ok(hi));
 
             // s == lo + hi * 2^128
             assert_eq!(*lo.as_scalar() + *hi.as_scalar() * two_128, s);
@@ -2420,7 +2415,7 @@ pub(crate) mod test {
 
             proptest::prop_assert_eq!(x.to_bytes(), bytes);
             proptest::prop_assert_eq!(x.as_scalar(), &Scalar::from(u128::from_le_bytes(bytes)));
-            proptest::prop_assert_eq!(HalfWidthScalar::from_scalar(*x.as_scalar()), Some(x));
+            proptest::prop_assert_eq!(HalfWidthScalar::try_from(*x.as_scalar()), Ok(x));
         }
 
         /// `split_at_128` reconstructs any scalar, and never produces an out-of-range half.
@@ -2431,8 +2426,8 @@ pub(crate) mod test {
             let s = Scalar::from_bytes_mod_order(bytes);
             let (lo, hi) = s.split_at_128();
 
-            proptest::prop_assert_eq!(HalfWidthScalar::from_scalar(*lo.as_scalar()), Some(lo));
-            proptest::prop_assert_eq!(HalfWidthScalar::from_scalar(*hi.as_scalar()), Some(hi));
+            proptest::prop_assert_eq!(HalfWidthScalar::try_from(*lo.as_scalar()), Ok(lo));
+            proptest::prop_assert_eq!(HalfWidthScalar::try_from(*hi.as_scalar()), Ok(hi));
             proptest::prop_assert_eq!(
                 *lo.as_scalar() + *hi.as_scalar() * two_pow_128(),
                 s

@@ -1088,9 +1088,7 @@ impl EdwardsPoint {
     /// Compute \\(a_1 A_1 + a_2 A_2 + b B\\) in variable time, where \\(B\\) is the Ed25519 basepoint.
     ///
     /// Taking \\(a_1\\) and \\(a_2\\) as [`HalfWidthScalar`]s — scalars known to be less than
-    /// \\(2^{128}\\) — lets this run in roughly half the doublings of the general case. The bound
-    /// is checked once, when the [`HalfWidthScalar`] is constructed, so this function itself
-    /// cannot fail and never panics.
+    /// \\(2^{128}\\) — lets this run in roughly half the doublings of the general case.
     ///
     /// [`HalfWidthScalar`]: crate::scalar::HalfWidthScalar
     ///
