@@ -1110,8 +1110,8 @@ impl EdwardsPoint {
     /// let result = EdwardsPoint::vartime_triple_scalar_mul_basepoint(&a1, &A1, &a2, &A2, &b);
     ///
     /// // An arbitrary `Scalar` has to be narrowed first, which fails if it is too large.
-    /// assert!(HalfWidthScalar::from_scalar(Scalar::from(789u64)).is_some());
-    /// assert!(HalfWidthScalar::from_scalar(-Scalar::ONE).is_none());
+    /// assert!(HalfWidthScalar::try_from(Scalar::from(789u64)).is_ok());
+    /// assert!(HalfWidthScalar::try_from(-Scalar::ONE).is_err());
     /// ```
     #[allow(non_snake_case)]
     pub fn vartime_triple_scalar_mul_basepoint(
