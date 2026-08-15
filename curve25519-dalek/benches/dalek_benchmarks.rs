@@ -76,31 +76,62 @@ mod edwards_benches {
     }
 
     fn vartime_triple_base_scalar_mul_128<M: Measurement>(c: &mut BenchmarkGroup<M>) {
-        c.bench_function("Variable-time a1*A1+a2*A2+b*B (128-bit a1,a2)", |bench| {
-            let mut rng = UnwrapErr(SysRng);
-            let A1 = EdwardsPoint::mul_base(&Scalar::random(&mut rng));
-            let A2 = EdwardsPoint::mul_base(&Scalar::random(&mut rng));
+        use curve25519_dalek::traits::VartimeMultiscalarMul;
 
-            bench.iter_batched(
-                || {
-                    // Generate 128-bit scalars for a1 and a2
-                    let mut a1_bytes = [0u8; 16];
-                    let mut a2_bytes = [0u8; 16];
-                    rng.fill_bytes(&mut a1_bytes);
-                    rng.fill_bytes(&mut a2_bytes);
+        let sample_a1_a2_b = |rng: &mut UnwrapErr<SysRng>| {
+            // Generate 128-bit scalars for a1 and a2
+            let mut a1_bytes = [0u8; 16];
+            let mut a2_bytes = [0u8; 16];
+            rng.fill_bytes(&mut a1_bytes);
+            rng.fill_bytes(&mut a2_bytes);
 
-                    let a1 = HalfWidthScalar::from_bytes(a1_bytes);
-                    let a2 = HalfWidthScalar::from_bytes(a2_bytes);
-                    let b = Scalar::random(&mut rng);
+            let a1 = HalfWidthScalar::from_bytes(a1_bytes);
+            let a2 = HalfWidthScalar::from_bytes(a2_bytes);
+            let b = Scalar::random(rng);
 
-                    (a1, a2, b)
-                },
-                |(a1, a2, b)| {
-                    EdwardsPoint::vartime_triple_scalar_mul_basepoint(&a1, &A1, &a2, &A2, &b)
-                },
-                BatchSize::SmallInput,
-            );
-        });
+            (a1, a2, b)
+        };
+
+        c.bench_function(
+            "Optimized variable-time a1*A1+a2*A2+b*B (128-bit a1,a2)",
+            |bench| {
+                let mut rng = UnwrapErr(SysRng);
+                let A1 = EdwardsPoint::mul_base(&Scalar::random(&mut rng));
+                let A2 = EdwardsPoint::mul_base(&Scalar::random(&mut rng));
+
+                bench.iter_batched(
+                    || sample_a1_a2_b(&mut rng),
+                    |(a1, a2, b)| {
+                        EdwardsPoint::vartime_triple_scalar_mul_basepoint(&a1, &A1, &a2, &A2, &b)
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
+        // Do the same `a1*A1 + a2*A2 + b*B` comptuation, but using a plain variable-time
+        // multiscalar multiplication over full 256-bit scalars
+        c.bench_function(
+            "Naive variable-time a1*A1+a2*A2+b*B (128-bit a1,a2)",
+            |bench| {
+                let mut rng = UnwrapErr(SysRng);
+                let A1 = EdwardsPoint::mul_base(&Scalar::random(&mut rng));
+                let A2 = EdwardsPoint::mul_base(&Scalar::random(&mut rng));
+                let B = curve25519_dalek::constants::ED25519_BASEPOINT_POINT;
+
+                bench.iter_batched(
+                    || sample_a1_a2_b(&mut rng),
+                    |(a1, a2, b)| {
+                        // Widen the half-width scalars back to full `Scalar`s and combine
+                        // all three terms with a generic variable-time multiscalar mul.
+                        let scalars = [Scalar::from(a1), Scalar::from(a2), b];
+                        let points = [A1, A2, B];
+                        EdwardsPoint::vartime_multiscalar_mul(&scalars, &points)
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
     }
 
     #[cfg(feature = "digest")]
