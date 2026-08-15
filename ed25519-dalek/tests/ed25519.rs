@@ -755,6 +755,9 @@ mod serialisation {
 
     // Test verify_heea against standard verification
     // verify_heea should accept the same signatures as verify_strict
+    //
+    // The vector is TEST 1 (empty message) from
+    // https://tools.ietf.org/html/rfc8032#section-7.1
     #[test]
     fn verify_heea_basic() {
         let sec_bytes =
@@ -787,6 +790,11 @@ mod serialisation {
     }
 
     // Test verify_heea with multiple test vectors
+    //
+    // The vectors are TEST 3 and TEST 1024 from
+    // https://tools.ietf.org/html/rfc8032#section-7.1, as
+    // (secret, public, message, signature). The secret is unused here; each case is checked
+    // through the public key alone.
     #[test]
     fn verify_heea_test_vectors() {
         let test_cases = vec![
@@ -830,6 +838,9 @@ mod serialisation {
     }
 
     // Test that verify_heea rejects invalid signatures
+    //
+    // The key and signature are TEST 1 from https://tools.ietf.org/html/rfc8032#section-7.1,
+    // deliberately paired with a message they were not signed over.
     #[test]
     fn verify_heea_rejects_invalid() {
         let pub_bytes =

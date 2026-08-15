@@ -160,7 +160,7 @@ impl VartimeMultiscalarMul for Straus {
     where
         I: IntoIterator,
         I::Item: Borrow<Scalar>,
-        J: IntoIterator<Item = Option<Self::Point>>,
+        J: IntoIterator<Item = Option<EdwardsPoint>>,
     {
         use crate::backend::serial::curve_models::{
             CompletedPoint, ProjectiveNielsPoint, ProjectivePoint,
