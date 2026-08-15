@@ -13,17 +13,13 @@
 
 #[curve25519_dalek_derive::unsafe_target_feature_specialize(
     "avx2",
-    conditional(
-        "avx512ifma,avx512vl",
-        all(curve25519_dalek_backend = "unstable_avx512", nightly)
-    )
+    conditional("avx512ifma,avx512vl", curve25519_dalek_backend = "avx512")
 )]
 pub mod spec {
 
     use alloc::vec::Vec;
 
     use core::borrow::Borrow;
-    use core::cmp::Ordering;
 
     #[cfg(feature = "zeroize")]
     use zeroize::Zeroizing;
@@ -34,6 +30,7 @@ pub mod spec {
     #[for_target_feature("avx512ifma")]
     use crate::backend::vector::ifma::{CachedPoint, ExtendedPoint};
 
+    use crate::backend::util::add_naf_digit;
     use crate::edwards::EdwardsPoint;
     use crate::scalar::Scalar;
     use crate::traits::{Identity, MultiscalarMul, VartimeMultiscalarMul};
@@ -111,15 +108,7 @@ pub mod spec {
                 Q = Q.double();
 
                 for (naf, lookup_table) in nafs.iter().zip(lookup_tables.iter()) {
-                    match naf[i].cmp(&0) {
-                        Ordering::Greater => {
-                            Q = &Q + &lookup_table.select(naf[i] as usize);
-                        }
-                        Ordering::Less => {
-                            Q = &Q - &lookup_table.select(-naf[i] as usize);
-                        }
-                        Ordering::Equal => {}
-                    }
+                    add_naf_digit!(Q, naf[i], lookup_table);
                 }
             }
 

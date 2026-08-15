@@ -15,7 +15,7 @@
 
 use core::borrow::Borrow;
 
-use crate::scalar::{Scalar, clamp_integer};
+use crate::scalar::{HalfWidthScalar, Scalar, clamp_integer};
 use subtle::ConstantTimeEq;
 
 // ------------------------------------------------------------------------
@@ -428,7 +428,7 @@ pub trait HEEADecomposition {
     ///
     /// Returns the tuple `(k1, k2, flip_h)`, where `flip_h` is a boolean
     /// indicating whether the sign of `h` was flipped during the decomposition.
-    fn heea_decompose(&self) -> (Scalar, Scalar, bool);
+    fn heea_decompose(&self) -> (HalfWidthScalar, HalfWidthScalar, bool);
 }
 
 // ------------------------------------------------------------------------

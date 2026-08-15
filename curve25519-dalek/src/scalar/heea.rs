@@ -406,27 +406,19 @@ impl core::ops::Shl<u32> for I256 {
 mod tests {
     use super::*;
 
-    #[cfg(all(feature = "rand_core", feature = "digest"))]
+    #[cfg(feature = "digest")]
     use crate::{Scalar, digest::Update, traits::HEEADecomposition};
 
-    #[cfg(feature = "rand_core")]
-    use rand::RngCore;
-
     #[test]
-    #[cfg(all(feature = "rand_core", feature = "digest"))]
+    #[cfg(feature = "digest")]
     fn test_generate_half_size_scalars() {
-        use rand::rng;
         use sha2::{Digest, Sha512};
-
-        let mut rng = rng();
 
         // Test with multiple random scalars
         for _ in 0..1000 {
             // Generate a random scalar by hashing random bytes
             let mut random_bytes = [0u8; 64];
-            for byte in &mut random_bytes {
-                *byte = (rng.next_u32() & 0xff) as u8;
-            }
+            getrandom::fill(&mut random_bytes).unwrap();
             let h = Scalar::from_hash(Sha512::new().chain(random_bytes));
 
             // Convert h to I256 to see the actual output
@@ -439,15 +431,16 @@ mod tests {
 
             // Now convert to Scalars and verify the equation
             let (rho, tau, flip) = h.heea_decompose();
+            let (rho, tau) = (rho.as_scalar(), tau.as_scalar());
 
             // Verify that rho = tau * h (mod ell)
             let computed_rho = tau * h;
             let computed_rho = if flip { -computed_rho } else { computed_rho };
-            assert_eq!(rho, computed_rho, "rho should equal tau * h");
+            assert_eq!(rho, &computed_rho, "rho should equal tau * h");
 
             // Check that they are non-zero
-            assert_ne!(rho, Scalar::ZERO, "rho should be non-zero");
-            assert_ne!(tau, Scalar::ZERO, "tau should be non-zero");
+            assert_ne!(rho, &Scalar::ZERO, "rho should be non-zero");
+            assert_ne!(tau, &Scalar::ZERO, "tau should be non-zero");
 
             // Both magnitudes should be approximately half-size (~127 bits)
             assert!(

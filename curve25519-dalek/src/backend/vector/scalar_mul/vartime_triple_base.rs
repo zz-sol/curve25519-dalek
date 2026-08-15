@@ -9,14 +9,9 @@
 
 #[curve25519_dalek_derive::unsafe_target_feature_specialize(
     "avx2",
-    conditional(
-        "avx512ifma,avx512vl",
-        all(curve25519_dalek_backend = "unstable_avx512", nightly)
-    )
+    conditional("avx512ifma,avx512vl", curve25519_dalek_backend = "avx512")
 )]
 pub mod spec {
-
-    use core::cmp::Ordering;
 
     #[for_target_feature("avx2")]
     use crate::backend::vector::avx2::{CachedPoint, ExtendedPoint};
@@ -31,18 +26,21 @@ pub mod spec {
     #[for_target_feature("avx512ifma")]
     use crate::backend::vector::ifma::constants::BASEPOINT_ODD_LOOKUP_TABLE;
 
+    use crate::backend::util::add_naf_digit;
     use crate::constants;
     use crate::edwards::EdwardsPoint;
     use crate::scalar::HEEA_MAX_INDEX;
-    use crate::scalar::Scalar;
+    use crate::scalar::{HalfWidthScalar, Scalar};
     #[allow(unused_imports)]
     use crate::traits::Identity;
     use crate::window::NafLookupTable5;
 
     /// Compute \\(a_1 A_1 + a_2 A_2 + b B\\) in variable time, where \\(B\\) is the Ed25519 basepoint.
     ///
-    /// This function is optimized for the case where \\(a_1\\) and \\(a_2\\) are known to be less than
-    /// \\(2^{128}\\), while \\(b\\) is a full 256-bit scalar.
+    /// \\(a_1\\) and \\(a_2\\) are [`HalfWidthScalar`]s, i.e. they are less than \\(2^{128}\\),
+    /// while \\(b\\) is a full 256-bit scalar. That bound is what makes the strategy below sound;
+    /// because it is carried by the type, there is nothing to check here and no input can make
+    /// this function panic or return a wrong answer.
     ///
     /// # Optimization Strategy
     ///
@@ -69,29 +67,15 @@ pub mod spec {
     /// This SIMD implementation uses vectorized point operations (AVX2 or AVX512-IFMA) for
     /// improved performance over the serial backend.
     pub fn mul_128_128_256(
-        a1: &Scalar,
+        a1: &HalfWidthScalar,
         A1: &EdwardsPoint,
-        a2: &Scalar,
+        a2: &HalfWidthScalar,
         A2: &EdwardsPoint,
         b: &Scalar,
     ) -> EdwardsPoint {
-        // assert that a1 and a2 are less than 2^128
-        debug_assert!(a1.as_bytes()[16..32].iter().all(|&b| b == 0));
-        debug_assert!(a2.as_bytes()[16..32].iter().all(|&b| b == 0));
-
-        // Decompose b into b_lo (lower 128 bits) and b_hi (upper 128 bits)
+        // Decompose b into b_lo (lower 128 bits) and b_hi (upper 128 bits), so that
         // b = b_lo + b_hi * 2^128
-        let b_bytes = b.as_bytes();
-
-        let mut b_lo_bytes = [0u8; 32];
-        let mut b_hi_bytes = [0u8; 32];
-
-        // Copy lower 16 bytes to b_lo, upper 16 bytes to b_hi
-        b_lo_bytes[..16].copy_from_slice(&b_bytes[..16]);
-        b_hi_bytes[..16].copy_from_slice(&b_bytes[16..]);
-
-        let b_lo = Scalar::from_canonical_bytes(b_lo_bytes).unwrap();
-        let b_hi = Scalar::from_canonical_bytes(b_hi_bytes).unwrap();
+        let (b_lo, b_hi) = b.split_at_128();
 
         // Compute NAF representations (all scalars are now ~128 bits)
         let a1_naf = a1.non_adjacent_form(5);
@@ -133,49 +117,11 @@ pub mod spec {
         loop {
             Q = Q.double();
 
-            // Add contributions from a1*A1
-            match a1_naf[i].cmp(&0) {
-                Ordering::Greater => {
-                    Q = &Q + &table_A1.select(a1_naf[i] as usize);
-                }
-                Ordering::Less => {
-                    Q = &Q - &table_A1.select(-a1_naf[i] as usize);
-                }
-                Ordering::Equal => {}
-            }
-
-            // Add contributions from a2*A2
-            match a2_naf[i].cmp(&0) {
-                Ordering::Greater => {
-                    Q = &Q + &table_A2.select(a2_naf[i] as usize);
-                }
-                Ordering::Less => {
-                    Q = &Q - &table_A2.select(-a2_naf[i] as usize);
-                }
-                Ordering::Equal => {}
-            }
-
-            // Add contributions from b_lo*B
-            match b_lo_naf[i].cmp(&0) {
-                Ordering::Greater => {
-                    Q = &Q + &table_B.select(b_lo_naf[i] as usize);
-                }
-                Ordering::Less => {
-                    Q = &Q - &table_B.select(-b_lo_naf[i] as usize);
-                }
-                Ordering::Equal => {}
-            }
-
-            // Add contributions from b_hi*B' where B' = B * 2^128
-            match b_hi_naf[i].cmp(&0) {
-                Ordering::Greater => {
-                    Q = &Q + &table_B_128.select(b_hi_naf[i] as usize);
-                }
-                Ordering::Less => {
-                    Q = &Q - &table_B_128.select(-b_hi_naf[i] as usize);
-                }
-                Ordering::Equal => {}
-            }
+            add_naf_digit!(Q, a1_naf[i], table_A1);
+            add_naf_digit!(Q, a2_naf[i], table_A2);
+            add_naf_digit!(Q, b_lo_naf[i], table_B);
+            // B' = B * 2^128
+            add_naf_digit!(Q, b_hi_naf[i], table_B_128);
 
             if i == 0 {
                 break;
@@ -184,5 +130,51 @@ pub mod spec {
         }
 
         Q.into()
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use crate::constants;
+    use crate::scalar::{HalfWidthScalar, Scalar};
+
+    // Proptest for the SIMD `vartime_triple_scalar_mul_basepoint` equivalence.
+    //
+    // This mirrors the serial-backend proptest, but drives the vectorized
+    // implementation via the runtime backend dispatcher, which safely selects
+    // the AVX2/AVX512 path on SIMD-capable machines.
+    proptest::proptest! {
+        #[test]
+        fn proptest_triple_scalar_mul_equivalence(
+            a1_bytes_16 in proptest::array::uniform16(proptest::num::u8::ANY),
+            a2_bytes_16 in proptest::array::uniform16(proptest::num::u8::ANY),
+            b_bytes in proptest::array::uniform32(proptest::num::u8::ANY),
+            A1_scalar_bytes in proptest::array::uniform32(proptest::num::u8::ANY),
+            A2_scalar_bytes in proptest::array::uniform32(proptest::num::u8::ANY),
+        ) {
+            // Construct 128-bit scalars a1 and a2
+            let a1 = HalfWidthScalar::from_bytes(a1_bytes_16);
+            let a2 = HalfWidthScalar::from_bytes(a2_bytes_16);
+
+            // Construct full 256-bit scalar b
+            let b = Scalar::from_bytes_mod_order(b_bytes);
+
+            // Generate random points A1 and A2 using scalar multiplication of basepoint
+            let A1_scalar = Scalar::from_bytes_mod_order(A1_scalar_bytes);
+            let A2_scalar = Scalar::from_bytes_mod_order(A2_scalar_bytes);
+            let A1 = &constants::ED25519_BASEPOINT_POINT * &A1_scalar;
+            let A2 = &constants::ED25519_BASEPOINT_POINT * &A2_scalar;
+
+            // Compute using the optimized triple-base function (SIMD backend dispatch)
+            let result_optimized =
+                crate::backend::vartime_triple_base_mul_128_128_256(&a1, &A1, &a2, &A2, &b);
+
+            // Compute using raw operations: a1*A1 + a2*A2 + b*B
+            let expected = &(&(a1.as_scalar() * &A1) + &(a2.as_scalar() * &A2))
+                + &(&b * &constants::ED25519_BASEPOINT_POINT);
+
+            proptest::prop_assert_eq!(result_optimized, expected, "Optimized triple scalar mul should equal raw operations");
+        }
     }
 }

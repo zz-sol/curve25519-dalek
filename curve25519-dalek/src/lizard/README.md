@@ -57,7 +57,7 @@ $$
 
 ## Background and Notation
 
-The computations will involve a family of related curves all defined over the prime field of order $p = 2^{255} - 19$ which we denote by $\mathbb{F}$. We will adopt the definition of [Decaf][decaf] and define an element of $\mathbb{F}$ to be *positive* if the low bit of its least positive representative is set.
+The computations will involve a family of related curves all defined over the prime field of order $p = 2^{255} - 19$ which we denote by $\mathbb{F}$. We will adopt the definition of [Decaf][decaf] and define an element of $\mathbb{F}$ to be *positive* if the low bit of its least positive representative is unset.
 
 ### Fundamental Curves
 

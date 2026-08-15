@@ -13,14 +13,9 @@
 
 #[curve25519_dalek_derive::unsafe_target_feature_specialize(
     "avx2",
-    conditional(
-        "avx512ifma,avx512vl",
-        all(curve25519_dalek_backend = "unstable_avx512", nightly)
-    )
+    conditional("avx512ifma,avx512vl", curve25519_dalek_backend = "avx512")
 )]
 pub mod spec {
-
-    use core::cmp::Ordering;
 
     #[for_target_feature("avx2")]
     use crate::backend::vector::avx2::{CachedPoint, ExtendedPoint};
@@ -36,6 +31,7 @@ pub mod spec {
     #[for_target_feature("avx512ifma")]
     use crate::backend::vector::ifma::constants::BASEPOINT_ODD_LOOKUP_TABLE;
 
+    use crate::backend::util::add_naf_digit;
     use crate::edwards::EdwardsPoint;
     use crate::scalar::Scalar;
     use crate::traits::Identity;
@@ -73,25 +69,8 @@ pub mod spec {
         loop {
             Q = Q.double();
 
-            match a_naf[i].cmp(&0) {
-                Ordering::Greater => {
-                    Q = &Q + &table_A.select(a_naf[i] as usize);
-                }
-                Ordering::Less => {
-                    Q = &Q - &table_A.select(-a_naf[i] as usize);
-                }
-                Ordering::Equal => {}
-            }
-
-            match b_naf[i].cmp(&0) {
-                Ordering::Greater => {
-                    Q = &Q + &table_B.select(b_naf[i] as usize);
-                }
-                Ordering::Less => {
-                    Q = &Q - &table_B.select(-b_naf[i] as usize);
-                }
-                Ordering::Equal => {}
-            }
+            add_naf_digit!(Q, a_naf[i], table_A);
+            add_naf_digit!(Q, b_naf[i], table_B);
 
             if i == 0 {
                 break;

@@ -9,6 +9,9 @@
 
 //! ed25519 public keys.
 
+#[cfg(feature = "digest")]
+use curve25519_dalek::digest::{common::KeySizeUser, typenum::U32};
+
 use core::fmt::Debug;
 use core::hash::{Hash, Hasher};
 
@@ -115,6 +118,11 @@ impl From<EdwardsPoint> for VerifyingKey {
             compressed: point.compress(),
         }
     }
+}
+
+#[cfg(feature = "digest")]
+impl KeySizeUser for VerifyingKey {
+    type KeySize = U32;
 }
 
 impl VerifyingKey {
@@ -437,7 +445,7 @@ impl VerifyingKey {
         let s = signature.s;
 
         // Compute τs
-        let ts = tau * s;
+        let ts = tau.as_scalar() * s;
         let A = if flip_h { -self.point } else { self.point };
         let neg_ts = -ts;
 
@@ -787,7 +795,7 @@ impl<'d> Deserialize<'d> for VerifyingKey {
             type Value = VerifyingKey;
 
             fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                write!(formatter, concat!("An ed25519 verifying (public) key"))
+                write!(formatter, "An ed25519 verifying (public) key")
             }
 
             fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> Result<Self::Value, E> {

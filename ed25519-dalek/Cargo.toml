@@ -1,6 +1,6 @@
 [package]
 name = "ed25519-dalek"
-version = "3.0.0-pre.3"
+version = "3.0.0"
 edition = "2024"
 authors = [
     "isis lovecruft <isis@patternsinthevoid.net>",
@@ -28,38 +28,39 @@ rustdoc-args = [
 all-features = true
 
 [dependencies]
-curve25519-dalek = { version = "=5.0.0-pre.3", default-features = false, features = [
+curve25519-dalek = { version = "5.0.0", default-features = false, features = [
     "digest",
 ] }
-ed25519 = { version = "3.0.0-rc.2", default-features = false }
-signature = { version = "3.0.0-rc.5", optional = true, default-features = false }
-sha2 = { version = "0.11.0-rc.3", default-features = false }
+ed25519 = { version = "3", default-features = false }
+signature = { version = "3", optional = true, default-features = false }
+sha2 = { version = "0.11", default-features = false }
 subtle = { version = "2.3.0", default-features = false }
 
 # optional features
-keccak = { version = "0.2.0-rc.0", default-features = false, optional = true }
-rand_core = { version = "0.10.0-rc-2", default-features = false, optional = true }
+keccak = { version = "0.2", default-features = false, optional = true }
+rand_core = { version = "0.10", default-features = false, optional = true }
 serde = { version = "1.0", default-features = false, optional = true }
 zeroize = { version = "1.5", default-features = false, optional = true }
+strobe-rs = { version = "0.13", optional = true }
 
 [dev-dependencies]
-curve25519-dalek = { version = "=5.0.0-pre.3", default-features = false, features = [
+curve25519-dalek = { version = "5", default-features = false, features = [
     "digest",
     "rand_core",
 ] }
-x25519-dalek = { version = "=3.0.0-pre.3", default-features = false, features = [
+x25519-dalek = { version = "3", default-features = false, features = [
     "static_secrets",
 ] }
-blake2 = "0.11.0-rc.3"
-sha3 = "0.11.0-rc.3"
+blake2 = "=0.11.0-rc.6"
+chacha20 = { version = "0.10", default-features = false, features = ["rng"] }
+sha3 = "0.11"
+getrandom = { version = "0.4", features = ["sys_rng"] }
 hex = "0.4"
-bincode = "1.0"
+postcard = { version = "1", features = ["alloc"] }
 serde_json = "1.0"
 criterion = { version = "0.5", features = ["html_reports"] }
 hex-literal = "1"
-rand = { version = "0.10.0-rc.5", features = ["chacha"] }
 serde = { version = "1.0", features = ["derive"] }
-strobe-rs = "0.5"
 toml = { version = "0.9" }
 
 [[bench]]
@@ -77,7 +78,7 @@ alloc = [
     "zeroize?/alloc",
 ]
 
-batch = ["alloc", "dep:keccak", "rand_core"]
+batch = ["alloc", "dep:keccak", "rand_core", "strobe-rs"]
 fast = ["curve25519-dalek/precomputed-tables"]
 digest = ["signature/digest"]
 # Exposes the hazmat module
@@ -86,6 +87,6 @@ hazmat = []
 legacy_compatibility = ["curve25519-dalek/legacy_compatibility"]
 pkcs8 = ["ed25519/pkcs8"]
 pem = ["alloc", "ed25519/pem", "pkcs8"]
-rand_core = ["dep:rand_core"]
+rand_core = ["dep:rand_core", "curve25519-dalek/rand_core", "signature/rand_core"]
 serde = ["dep:serde", "ed25519/serde"]
 zeroize = ["dep:zeroize", "curve25519-dalek/zeroize"]

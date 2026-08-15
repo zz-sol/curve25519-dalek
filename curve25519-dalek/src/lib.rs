@@ -59,6 +59,9 @@ extern crate alloc;
 #[macro_use]
 extern crate std;
 
+#[cfg(feature = "rand_core")]
+pub use rand_core;
+
 #[cfg(feature = "digest")]
 pub use digest;
 
@@ -108,7 +111,10 @@ pub(crate) mod window;
 mod lizard;
 
 pub use crate::{
-    edwards::EdwardsPoint, montgomery::MontgomeryPoint, ristretto::RistrettoPoint, scalar::Scalar,
+    edwards::EdwardsPoint,
+    montgomery::MontgomeryPoint,
+    ristretto::RistrettoPoint,
+    scalar::{HalfWidthScalar, Scalar},
 };
 
 // Build time diagnostics for validation

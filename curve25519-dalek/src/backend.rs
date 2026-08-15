@@ -36,6 +36,9 @@
 
 use crate::EdwardsPoint;
 use crate::Scalar;
+use crate::scalar::HalfWidthScalar;
+
+mod util;
 
 pub mod serial;
 
@@ -46,14 +49,14 @@ pub mod vector;
 enum BackendKind {
     #[cfg(curve25519_dalek_backend = "simd")]
     Avx2,
-    #[cfg(all(curve25519_dalek_backend = "unstable_avx512", nightly))]
+    #[cfg(curve25519_dalek_backend = "avx512")]
     Avx512,
     Serial,
 }
 
 #[inline]
 fn get_selected_backend() -> BackendKind {
-    #[cfg(all(curve25519_dalek_backend = "unstable_avx512", nightly))]
+    #[cfg(curve25519_dalek_backend = "avx512")]
     {
         cpufeatures::new!(cpuid_avx512, "avx512ifma", "avx512vl");
         let token_avx512: cpuid_avx512::InitToken = cpuid_avx512::init();
@@ -88,7 +91,7 @@ where
         #[cfg(curve25519_dalek_backend = "simd")]
         BackendKind::Avx2 =>
             vector::scalar_mul::pippenger::spec_avx2::Pippenger::optional_multiscalar_mul::<I, J>(scalars, points),
-        #[cfg(all(curve25519_dalek_backend = "unstable_avx512", nightly))]
+        #[cfg(curve25519_dalek_backend = "avx512")]
         BackendKind::Avx512 =>
             vector::scalar_mul::pippenger::spec_avx512ifma_avx512vl::Pippenger::optional_multiscalar_mul::<I, J>(scalars, points),
         BackendKind::Serial =>
@@ -100,7 +103,7 @@ where
 pub(crate) enum VartimePrecomputedStraus {
     #[cfg(curve25519_dalek_backend = "simd")]
     Avx2(vector::scalar_mul::precomputed_straus::spec_avx2::VartimePrecomputedStraus),
-    #[cfg(all(curve25519_dalek_backend = "unstable_avx512", nightly))]
+    #[cfg(curve25519_dalek_backend = "avx512")]
     Avx512ifma(
         vector::scalar_mul::precomputed_straus::spec_avx512ifma_avx512vl::VartimePrecomputedStraus,
     ),
@@ -120,7 +123,7 @@ impl VartimePrecomputedStraus {
             #[cfg(curve25519_dalek_backend = "simd")]
             BackendKind::Avx2 =>
                 VartimePrecomputedStraus::Avx2(vector::scalar_mul::precomputed_straus::spec_avx2::VartimePrecomputedStraus::new(static_points)),
-            #[cfg(all(curve25519_dalek_backend = "unstable_avx512", nightly))]
+            #[cfg(curve25519_dalek_backend = "avx512")]
             BackendKind::Avx512 =>
                 VartimePrecomputedStraus::Avx512ifma(vector::scalar_mul::precomputed_straus::spec_avx512ifma_avx512vl::VartimePrecomputedStraus::new(static_points)),
             BackendKind::Serial =>
@@ -135,7 +138,7 @@ impl VartimePrecomputedStraus {
         match self {
             #[cfg(curve25519_dalek_backend = "simd")]
             VartimePrecomputedStraus::Avx2(inner) => inner.len(),
-            #[cfg(all(curve25519_dalek_backend = "unstable_avx512", nightly))]
+            #[cfg(curve25519_dalek_backend = "avx512")]
             VartimePrecomputedStraus::Avx512ifma(inner) => inner.len(),
             VartimePrecomputedStraus::Scalar(inner) => inner.len(),
         }
@@ -148,7 +151,7 @@ impl VartimePrecomputedStraus {
         match self {
             #[cfg(curve25519_dalek_backend = "simd")]
             VartimePrecomputedStraus::Avx2(inner) => inner.is_empty(),
-            #[cfg(all(curve25519_dalek_backend = "unstable_avx512", nightly))]
+            #[cfg(curve25519_dalek_backend = "avx512")]
             VartimePrecomputedStraus::Avx512ifma(inner) => inner.is_empty(),
             VartimePrecomputedStraus::Scalar(inner) => inner.is_empty(),
         }
@@ -176,7 +179,7 @@ impl VartimePrecomputedStraus {
                 dynamic_scalars,
                 dynamic_points,
             ),
-            #[cfg(all(curve25519_dalek_backend = "unstable_avx512", nightly))]
+            #[cfg(curve25519_dalek_backend = "avx512")]
             VartimePrecomputedStraus::Avx512ifma(inner) => inner.optional_mixed_multiscalar_mul(
                 static_scalars,
                 dynamic_scalars,
@@ -207,7 +210,7 @@ where
         BackendKind::Avx2 => {
             vector::scalar_mul::straus::spec_avx2::Straus::multiscalar_mul::<I, J>(scalars, points)
         }
-        #[cfg(all(curve25519_dalek_backend = "unstable_avx512", nightly))]
+        #[cfg(curve25519_dalek_backend = "avx512")]
         BackendKind::Avx512 => {
             vector::scalar_mul::straus::spec_avx512ifma_avx512vl::Straus::multiscalar_mul::<I, J>(
                 scalars, points,
@@ -236,7 +239,7 @@ where
                 scalars, points,
             )
         }
-        #[cfg(all(curve25519_dalek_backend = "unstable_avx512", nightly))]
+        #[cfg(curve25519_dalek_backend = "avx512")]
         BackendKind::Avx512 => {
             vector::scalar_mul::straus::spec_avx512ifma_avx512vl::Straus::optional_multiscalar_mul::<
                 I,
@@ -254,7 +257,7 @@ pub fn variable_base_mul(point: &EdwardsPoint, scalar: &Scalar) -> EdwardsPoint 
     match get_selected_backend() {
         #[cfg(curve25519_dalek_backend = "simd")]
         BackendKind::Avx2 => vector::scalar_mul::variable_base::spec_avx2::mul(point, scalar),
-        #[cfg(all(curve25519_dalek_backend = "unstable_avx512", nightly))]
+        #[cfg(curve25519_dalek_backend = "avx512")]
         BackendKind::Avx512 => {
             vector::scalar_mul::variable_base::spec_avx512ifma_avx512vl::mul(point, scalar)
         }
@@ -268,7 +271,7 @@ pub fn vartime_double_base_mul(a: &Scalar, A: &EdwardsPoint, b: &Scalar) -> Edwa
     match get_selected_backend() {
         #[cfg(curve25519_dalek_backend = "simd")]
         BackendKind::Avx2 => vector::scalar_mul::vartime_double_base::spec_avx2::mul(a, A, b),
-        #[cfg(all(curve25519_dalek_backend = "unstable_avx512", nightly))]
+        #[cfg(curve25519_dalek_backend = "avx512")]
         BackendKind::Avx512 => {
             vector::scalar_mul::vartime_double_base::spec_avx512ifma_avx512vl::mul(a, A, b)
         }
@@ -278,12 +281,13 @@ pub fn vartime_double_base_mul(a: &Scalar, A: &EdwardsPoint, b: &Scalar) -> Edwa
 
 /// Compute \\(a_1 A_1 + a_2 A_2 + b B\\) in variable time, where \\(B\\) is the Ed25519 basepoint.
 ///
-/// This function is optimized for the case where \\(a_1\\) and \\(a_2\\) are less than \\(2^{128}\\).
+/// \\(a_1\\) and \\(a_2\\) are [`HalfWidthScalar`]s, i.e. they are less than \\(2^{128}\\), which
+/// lets this run in roughly half the doublings of the general case.
 #[allow(non_snake_case)]
 pub fn vartime_triple_base_mul_128_128_256(
-    a1: &Scalar,
+    a1: &HalfWidthScalar,
     A1: &EdwardsPoint,
-    a2: &Scalar,
+    a2: &HalfWidthScalar,
     A2: &EdwardsPoint,
     b: &Scalar,
 ) -> EdwardsPoint {
@@ -292,7 +296,7 @@ pub fn vartime_triple_base_mul_128_128_256(
         BackendKind::Avx2 => {
             vector::scalar_mul::vartime_triple_base::spec_avx2::mul_128_128_256(a1, A1, a2, A2, b)
         }
-        #[cfg(all(curve25519_dalek_backend = "unstable_avx512", nightly))]
+        #[cfg(curve25519_dalek_backend = "avx512")]
         BackendKind::Avx512 => {
             vector::scalar_mul::vartime_triple_base::spec_avx512ifma_avx512vl::mul_128_128_256(
                 a1, A1, a2, A2, b,

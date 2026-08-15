@@ -124,11 +124,9 @@ use cfg_if::cfg_if;
 
 #[cfg(feature = "group")]
 use group::ff::{Field, FromUniformBytes, PrimeField};
-#[cfg(feature = "group-bits")]
-use group::ff::{FieldBits, PrimeFieldBits};
 
 #[cfg(feature = "group")]
-use rand_core::TryRngCore;
+use rand_core::TryRng;
 
 #[cfg(feature = "rand_core")]
 use rand_core::CryptoRng;
@@ -573,7 +571,7 @@ impl HEEADecomposition for Scalar {
     /// and produces two half-size scalars rho and tau such that rho = tau*h (mod ell).
     ///
     /// And a flag indicating if rho is negative in its signed representation.
-    fn heea_decompose(&self) -> (Scalar, Scalar, bool) {
+    fn heea_decompose(&self) -> (HalfWidthScalar, HalfWidthScalar, bool) {
         // Convert h to I256
         let v = self.into();
 
@@ -591,8 +589,9 @@ impl HEEADecomposition for Scalar {
             flip_h = !flip_h;
         }
 
-        let rho = Scalar::from_positive_i256(&rho_i);
-        let tau = Scalar::from_positive_i256(&tau_i);
+        // Both magnitudes are less than 2^128, so they are `HalfWidthScalar`s.
+        let rho = HalfWidthScalar::from_positive_i256(&rho_i);
+        let tau = HalfWidthScalar::from_positive_i256(&tau_i);
 
         (rho, tau, flip_h)
     }
@@ -625,10 +624,9 @@ impl Scalar {
     /// ```
     /// # fn main() {
     /// use curve25519_dalek::scalar::Scalar;
+    /// use getrandom::{SysRng, rand_core::UnwrapErr};
     ///
-    /// use rand::{rngs::OsRng, TryRngCore};
-    ///
-    /// let mut csprng = OsRng.unwrap_err();
+    /// let mut csprng = UnwrapErr(SysRng);
     /// let a: Scalar = Scalar::random(&mut csprng);
     /// # }
     #[cfg(feature = "rand_core")]
@@ -1200,15 +1198,6 @@ impl Scalar {
         UnpackedScalar::from_bytes(&self.bytes)
     }
 
-    /// Create a `Scalar` from a positive `I256`.
-    /// The caller must ensure val > 0.
-    pub(crate) fn from_positive_i256(val: &I256) -> Self {
-        debug_assert!(val >= &I256::ZERO);
-        Scalar {
-            bytes: val.to_le_bytes(),
-        }
-    }
-
     /// Reduce this `Scalar` modulo \\(\ell\\).
     #[allow(non_snake_case)]
     fn reduce(&self) -> Scalar {
@@ -1302,7 +1291,7 @@ impl Field for Scalar {
     const ZERO: Self = Self::ZERO;
     const ONE: Self = Self::ONE;
 
-    fn try_from_rng<R: TryRngCore + ?Sized>(rng: &mut R) -> Result<Self, R::Error> {
+    fn try_random<R: TryRng + ?Sized>(rng: &mut R) -> Result<Self, R::Error> {
         // NOTE: this is duplicated due to different `rng` bounds
         let mut scalar_bytes = [0u8; 64];
         rng.try_fill_bytes(&mut scalar_bytes)?;
@@ -1412,19 +1401,6 @@ impl PrimeField for Scalar {
     };
 }
 
-#[cfg(feature = "group-bits")]
-impl PrimeFieldBits for Scalar {
-    type ReprBits = [u8; 32];
-
-    fn to_le_bits(&self) -> FieldBits<Self::ReprBits> {
-        self.to_repr().into()
-    }
-
-    fn char_le_bits() -> FieldBits<Self::ReprBits> {
-        constants::BASEPOINT_ORDER.to_bytes().into()
-    }
-}
-
 #[cfg(feature = "group")]
 impl FromUniformBytes<64> for Scalar {
     fn from_uniform_bytes(bytes: &[u8; 64]) -> Self {
@@ -1479,10 +1455,139 @@ pub const fn clamp_integer(mut bytes: [u8; 32]) -> [u8; 32] {
     bytes
 }
 
+/// A [`Scalar`] which is guaranteed to be less than \\( 2^{128} \\).
+///
+/// Some variable-time algorithms are roughly twice as fast when a scalar is known to fit in the
+/// low half of its encoding, because they only have to walk 128 digits instead of 256 — see
+/// [`EdwardsPoint::vartime_triple_scalar_mul_basepoint`].
+///
+/// [`EdwardsPoint::vartime_triple_scalar_mul_basepoint`]: crate::edwards::EdwardsPoint::vartime_triple_scalar_mul_basepoint
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct HalfWidthScalar(Scalar);
+
+impl TryFrom<Scalar> for HalfWidthScalar {
+    type Error = ();
+
+    /// Attempt to view `scalar` as a `HalfWidthScalar`. Returns `Ok` if `value` is less
+    /// than \\( 2^{128} \\)
+    fn try_from(value: Scalar) -> Result<Self, Self::Error> {
+        if value.bytes[16..].iter().all(|&byte| byte == 0) {
+            Ok(Self(value))
+        } else {
+            Err(())
+        }
+    }
+}
+
+impl HalfWidthScalar {
+    /// The scalar \\( 0 \\).
+    pub const ZERO: Self = Self(Scalar::ZERO);
+
+    /// The scalar \\( 1 \\).
+    pub const ONE: Self = Self(Scalar::ONE);
+
+    /// Construct a `HalfWidthScalar` from the little-endian encoding of a 128-bit integer.
+    ///
+    /// Every 128-bit integer is a valid `HalfWidthScalar`, so this cannot fail.
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        let mut s_bytes = [0u8; 32];
+        let mut i = 0;
+        while i < 16 {
+            s_bytes[i] = bytes[i];
+            i += 1;
+        }
+        // 2^128 < l, so the result is a canonical representative and both `Scalar` invariants
+        // hold.
+        Self(Scalar { bytes: s_bytes })
+    }
+
+    /// View this scalar as a full-width [`Scalar`].
+    pub const fn as_scalar(&self) -> &Scalar {
+        &self.0
+    }
+
+    /// The little-endian encoding of this scalar as a 128-bit integer.
+    pub fn to_bytes(&self) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        bytes.copy_from_slice(&self.0.bytes[..16]);
+        bytes
+    }
+
+    /// Compute the width-`w` "Non-Adjacent Form" of this scalar. See
+    /// [`Scalar::non_adjacent_form`].
+    pub(crate) fn non_adjacent_form(&self, w: usize) -> [i8; 256] {
+        self.0.non_adjacent_form(w)
+    }
+
+    /// Construct a `HalfWidthScalar` from a non-negative [`I256`] which is less than
+    /// \\( 2^{128} \\). Anything above that bound is truncated to its low 128 bits.
+    pub(crate) fn from_positive_i256(val: &I256) -> Self {
+        debug_assert!(val >= &I256::ZERO);
+        let bytes = val.to_le_bytes();
+        debug_assert!(
+            bytes[16..].iter().all(|&byte| byte == 0),
+            "value must be less than 2^128"
+        );
+
+        let mut lo = [0u8; 16];
+        lo.copy_from_slice(&bytes[..16]);
+        Self::from_bytes(lo)
+    }
+}
+
+impl Scalar {
+    /// Split this scalar into halves \\( (s\_{lo}, s\_{hi}) \\) such that
+    /// \\( s = s\_{lo} + s\_{hi} 2^{128} \\).
+    ///
+    /// Both halves are less than \\( 2^{128} \\) by construction, so no bounds check is needed.
+    pub(crate) fn split_at_128(&self) -> (HalfWidthScalar, HalfWidthScalar) {
+        let mut lo = [0u8; 16];
+        let mut hi = [0u8; 16];
+        lo.copy_from_slice(&self.bytes[..16]);
+        hi.copy_from_slice(&self.bytes[16..]);
+
+        (
+            HalfWidthScalar::from_bytes(lo),
+            HalfWidthScalar::from_bytes(hi),
+        )
+    }
+}
+
+impl From<HalfWidthScalar> for Scalar {
+    fn from(x: HalfWidthScalar) -> Scalar {
+        x.0
+    }
+}
+
+macro_rules! impl_from_unsigned_for_half_width_scalar {
+    ($($t:ty),+) => {$(
+        impl From<$t> for HalfWidthScalar {
+            fn from(x: $t) -> HalfWidthScalar {
+                let mut bytes = [0u8; 16];
+                let x_bytes = x.to_le_bytes();
+                bytes[..x_bytes.len()].copy_from_slice(&x_bytes);
+                HalfWidthScalar::from_bytes(bytes)
+            }
+        }
+    )+};
+}
+
+impl_from_unsigned_for_half_width_scalar!(u8, u16, u32, u64, u128);
+
+#[cfg(feature = "zeroize")]
+impl Zeroize for HalfWidthScalar {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
-    use rand::RngCore;
+    use getrandom::{
+        SysRng,
+        rand_core::{Rng, UnwrapErr},
+    };
 
     #[cfg(feature = "alloc")]
     use alloc::vec::Vec;
@@ -1644,7 +1749,7 @@ pub(crate) mod test {
     #[cfg(feature = "rand_core")]
     #[test]
     fn non_adjacent_form_random() {
-        let mut rng = rand::rng();
+        let mut rng = UnwrapErr(SysRng);
         for _ in 0..1_000 {
             let x = Scalar::random(&mut rng);
             for w in &[5, 6, 7, 8] {
@@ -1912,17 +2017,18 @@ pub(crate) mod test {
 
     #[test]
     #[cfg(feature = "serde")]
-    fn serde_bincode_scalar_roundtrip() {
-        use bincode;
-        let encoded = bincode::serialize(&X).unwrap();
-        let parsed: Scalar = bincode::deserialize(&encoded).unwrap();
+    fn serde_postcard_scalar_roundtrip() {
+        let encoded = postcard::to_allocvec(&X).unwrap();
+        let parsed: Scalar = postcard::from_bytes(&encoded).unwrap();
         assert_eq!(parsed, X);
 
         // Check that the encoding is 32 bytes exactly
         assert_eq!(encoded.len(), 32);
 
-        // Check that the encoding itself matches the usual one
-        assert_eq!(X, bincode::deserialize(X.as_bytes()).unwrap(),);
+        // Check that the encoding itself matches the usual one.
+        // serde::Deserialize on fixed-size arrays calls tuple deserialization. postcard
+        // (de)serializes tuples by just doing each element and that's it.
+        assert_eq!(X, postcard::from_bytes(X.as_bytes()).unwrap(),);
     }
 
     #[cfg(debug_assertions)]
@@ -2174,7 +2280,7 @@ pub(crate) mod test {
     // was reduced and b was clamped and unreduced. This checks that was always well-defined.
     #[test]
     fn test_mul_reduction_invariance() {
-        let mut rng = rand::rng();
+        let mut rng = UnwrapErr(SysRng);
 
         for _ in 0..10 {
             // Also define c that's clamped. We'll make sure that clamping doesn't affect
@@ -2204,6 +2310,185 @@ pub(crate) mod test {
             assert_eq!(a * c, reduced_mul_ac);
             assert_eq!(a.reduce() * c, reduced_mul_ac);
             assert_eq!(a * c.reduce(), reduced_mul_ac);
+        }
+    }
+
+    /// The scalar \\( 2^{128} \\), the exclusive upper bound on a `HalfWidthScalar`.
+    fn two_pow_128() -> Scalar {
+        // `Scalar::from(u128)` can't represent 2^128, so build it as 2^127 + 2^127.
+        let two_pow_127 = Scalar::from(1u128 << 127);
+        two_pow_127 + two_pow_127
+    }
+
+    #[test]
+    fn half_width_scalar_from_bytes_matches_from_u128() {
+        for x in [0u128, 1, 42, u64::MAX as u128, 1 << 127, u128::MAX] {
+            let from_int = HalfWidthScalar::from(x);
+            let from_bytes = HalfWidthScalar::from_bytes(x.to_le_bytes());
+
+            assert_eq!(from_int, from_bytes);
+            // ... and both agree with going through `Scalar`.
+            assert_eq!(from_int.as_scalar(), &Scalar::from(x));
+            // Round-trip back out to bytes.
+            assert_eq!(from_int.to_bytes(), x.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn half_width_scalar_from_unsigned_widths_agree() {
+        // The `From<u8/u16/u32/u64/u128>` impls must all encode the same integer identically.
+        let x = 0x7Au8;
+        let expected = HalfWidthScalar::from(x);
+
+        assert_eq!(HalfWidthScalar::from(u16::from(x)), expected);
+        assert_eq!(HalfWidthScalar::from(u32::from(x)), expected);
+        assert_eq!(HalfWidthScalar::from(u64::from(x)), expected);
+        assert_eq!(HalfWidthScalar::from(u128::from(x)), expected);
+    }
+
+    #[test]
+    fn half_width_scalar_constants() {
+        assert_eq!(HalfWidthScalar::ZERO.as_scalar(), &Scalar::ZERO);
+        assert_eq!(HalfWidthScalar::ONE.as_scalar(), &Scalar::ONE);
+        assert_eq!(HalfWidthScalar::ZERO, HalfWidthScalar::from(0u8));
+        assert_eq!(HalfWidthScalar::ONE, HalfWidthScalar::from(1u8));
+        // `Default` is zero, like `Scalar`'s.
+        assert_eq!(HalfWidthScalar::default(), HalfWidthScalar::ZERO);
+    }
+
+    #[test]
+    fn half_width_scalar_from_scalar_accepts_up_to_the_bound() {
+        // 2^128 - 1 is the largest accepted value.
+        let max = Scalar::from(u128::MAX);
+        let half = HalfWidthScalar::try_from(max).expect("2^128 - 1 is half-width");
+        assert_eq!(half.as_scalar(), &max);
+        assert_eq!(half, HalfWidthScalar::from(u128::MAX));
+
+        // Zero and one are trivially accepted.
+        assert!(HalfWidthScalar::try_from(Scalar::ZERO).is_ok());
+        assert!(HalfWidthScalar::try_from(Scalar::ONE).is_ok());
+    }
+
+    #[test]
+    fn half_width_scalar_from_scalar_rejects_the_bound_and_above() {
+        // 2^128 itself is one too many: rejected, rather than silently truncated to zero.
+        assert!(HalfWidthScalar::try_from(two_pow_128()).is_err());
+
+        // So is anything larger, including a full-width random scalar and -1 mod l.
+        assert!(HalfWidthScalar::try_from(two_pow_128() + Scalar::ONE).is_err());
+        assert!(HalfWidthScalar::try_from(-Scalar::ONE).is_err());
+        assert!(HalfWidthScalar::try_from(X).is_err());
+
+        // Every rejection is because bit 128 or above is set; check the boundary bit directly.
+        let mut just_over = [0u8; 32];
+        just_over[16] = 1;
+        assert!(HalfWidthScalar::try_from(Scalar { bytes: just_over }).is_err());
+    }
+
+    #[test]
+    fn half_width_scalar_round_trips_through_scalar() {
+        let x = HalfWidthScalar::from(0xDEAD_BEEF_u64);
+
+        // `Scalar::from(HalfWidthScalar)` and `from_scalar` are inverse.
+        let as_scalar = Scalar::from(x);
+        assert_eq!(&as_scalar, x.as_scalar());
+        assert_eq!(HalfWidthScalar::try_from(as_scalar), Ok(x));
+    }
+
+    #[test]
+    fn half_width_scalar_naf_matches_inner_scalar() {
+        let mut rng = UnwrapErr(SysRng);
+
+        for _ in 0..16 {
+            let mut bytes = [0u8; 16];
+            rng.fill_bytes(&mut bytes);
+            let x = HalfWidthScalar::from_bytes(bytes);
+
+            for w in [5usize, 8] {
+                assert_eq!(
+                    x.non_adjacent_form(w).as_slice(),
+                    x.as_scalar().non_adjacent_form(w).as_slice(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_split_at_128_edge_cases() {
+        // Zero splits into two zeroes.
+        let (lo, hi) = Scalar::ZERO.split_at_128();
+        assert_eq!(lo, HalfWidthScalar::ZERO);
+        assert_eq!(hi, HalfWidthScalar::ZERO);
+
+        // A value below 2^128 lands entirely in the low half.
+        let (lo, hi) = Scalar::from(u128::MAX).split_at_128();
+        assert_eq!(lo, HalfWidthScalar::from(u128::MAX));
+        assert_eq!(hi, HalfWidthScalar::ZERO);
+
+        // 2^128 lands entirely in the high half, as a one.
+        let (lo, hi) = two_pow_128().split_at_128();
+        assert_eq!(lo, HalfWidthScalar::ZERO);
+        assert_eq!(hi, HalfWidthScalar::ONE);
+    }
+
+    #[test]
+    fn scalar_split_at_128_recombines() {
+        let mut rng = UnwrapErr(SysRng);
+        let two_128 = two_pow_128();
+
+        for _ in 0..32 {
+            let mut wide = [0u8; 64];
+            rng.fill_bytes(&mut wide);
+            let s = Scalar::from_bytes_mod_order_wide(&wide);
+
+            let (lo, hi) = s.split_at_128();
+
+            // Both halves must satisfy the `HalfWidthScalar` bound by construction, so feeding
+            // them back through the checked constructor must succeed.
+            assert_eq!(HalfWidthScalar::try_from(*lo.as_scalar()), Ok(lo));
+            assert_eq!(HalfWidthScalar::try_from(*hi.as_scalar()), Ok(hi));
+
+            // s == lo + hi * 2^128
+            assert_eq!(*lo.as_scalar() + *hi.as_scalar() * two_128, s);
+        }
+    }
+
+    #[cfg(feature = "zeroize")]
+    #[test]
+    fn half_width_scalar_zeroize() {
+        let mut x = HalfWidthScalar::from(u128::MAX);
+        x.zeroize();
+        assert_eq!(x, HalfWidthScalar::ZERO);
+    }
+
+    proptest::proptest! {
+        /// `from_bytes` and `to_bytes` are inverse for every 16-byte string, and the result always
+        /// satisfies the half-width bound.
+        #[test]
+        fn proptest_half_width_scalar_byte_round_trip(
+            bytes in proptest::array::uniform16(proptest::num::u8::ANY),
+        ) {
+            let x = HalfWidthScalar::from_bytes(bytes);
+
+            proptest::prop_assert_eq!(x.to_bytes(), bytes);
+            proptest::prop_assert_eq!(x.as_scalar(), &Scalar::from(u128::from_le_bytes(bytes)));
+            proptest::prop_assert_eq!(HalfWidthScalar::try_from(*x.as_scalar()), Ok(x));
+        }
+
+        /// `split_at_128` reconstructs any scalar, and never produces an out-of-range half.
+        #[test]
+        fn proptest_scalar_split_at_128(
+            bytes in proptest::array::uniform32(proptest::num::u8::ANY),
+        ) {
+            let s = Scalar::from_bytes_mod_order(bytes);
+            let (lo, hi) = s.split_at_128();
+
+            proptest::prop_assert_eq!(HalfWidthScalar::try_from(*lo.as_scalar()), Ok(lo));
+            proptest::prop_assert_eq!(HalfWidthScalar::try_from(*hi.as_scalar()), Ok(hi));
+            proptest::prop_assert_eq!(
+                *lo.as_scalar() + *hi.as_scalar() * two_pow_128(),
+                s
+            );
         }
     }
 }
